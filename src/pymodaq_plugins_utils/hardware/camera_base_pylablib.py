@@ -86,6 +86,11 @@ class CameraCallback(QtCore.QObject):
                     while ind_frames < mode.nframes:
                         self.controller.wait_for_frame(since='now')
                         new_frames, rng = self.controller.read_multiple_images(missing_frame='skip', return_rng=True)
+
+                        # in case hardware has a random buffer size (ex: Andor CCD cameras)
+                        if new_frames.shape[0] != mode.nframes:
+                            new_frames = np.expand_dims(new_frames[-mode.nframes:], axis=0)
+
                         if ind_average == 0 and ind_frames == 0:
                             shape = list(new_frames.shape[1:])
                             shape = [mode.n_average, mode.nframes] + shape
