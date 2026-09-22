@@ -24,7 +24,7 @@ Authors
 =======
 
 * Sebastien J. Weber (sebastien.weber@cemes.fr)
-* Other author (myotheremail@xxx.org)
+* Constant Schouder (constant.schouder@universite-paris-saclay.fr)
 
 .. if needed use this field
 

@@ -14,6 +14,11 @@ serial = [
     "pyserial",
 ]
 
+camera = [
+    "pylablib",
+    "opencv-python",
+]
+
 [project]
 name = "pymodaq_plugins_utils"
 description = 'Set of utility methods and classes to interact with instruments'
@@ -24,7 +29,7 @@ dependencies = [
 
 authors = [
     {name = "Weber Sebastien", email = "sebastien.weber@cemes.fr"},
-    #todo: list here all authors of your plugin
+    {name = "Schouder Constant", email = "constant.schouder@universite-paris-saclay.fr"},
 ]
 maintainers = [
     {name = "Weber Sebastien", email = "sebastien.weber@cemes.fr"},

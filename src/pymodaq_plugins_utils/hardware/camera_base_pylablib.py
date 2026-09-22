@@ -300,7 +300,7 @@ class CameraBasePyLabLib(DAQ_Viewer_base):
         self.settings.child('buffer', 'mode').setReadonly(True)
 
 
-        self.callback_thread = QtCore.QThread()  # creation of a Qt5 thread
+        self.callback_thread = QtCore.QThread(self)  # creation of a Qt5 thread
         callback.moveToThread(self.callback_thread)  # callback object will live within this thread
 
         callback.data_sig.connect(
