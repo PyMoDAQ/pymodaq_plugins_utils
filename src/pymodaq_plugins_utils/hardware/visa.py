@@ -6,13 +6,13 @@ VISA backend is found, all functions return empty lists and a warning is logged.
 
 Typical usage in a plugin::
 
-    from pymodaq_utils.hardware.visa import list_serial_resources
+    from pymodaq_plugins_utils.hardware.visa import list_serial_resources
 
     ports = list_serial_resources()  # e.g. ['ASRL/dev/ttyUSB0::INSTR']
 
 After hot-plugging a device, refresh the cache with::
 
-    from pymodaq_utils.hardware.visa import invalidate_cache
+    from pymodaq_plugins_utils.hardware.visa import invalidate_cache
     invalidate_cache()
 """
 import pymodaq_utils.logger as logger_module
