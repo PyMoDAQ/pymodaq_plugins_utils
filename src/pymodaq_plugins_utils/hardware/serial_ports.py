@@ -6,13 +6,13 @@ not installed, all functions return empty lists and a warning is logged.
 
 Typical usage in a plugin::
 
-    from pymodaq_utils.hardware.serial_ports import list_resources
+    from pymodaq_plugins_utils.hardware.serial_ports import list_resources
 
     ports = list_resources()  # e.g. ['/dev/ttyUSB0', 'COM3']
 
 After hot-plugging a device, refresh the cache with::
 
-    from pymodaq_utils.hardware.serial_ports import invalidate_cache
+    from pymodaq_plugins_utils.hardware.serial_ports import invalidate_cache
     invalidate_cache()
 """
 import pymodaq_utils.logger as logger_module
