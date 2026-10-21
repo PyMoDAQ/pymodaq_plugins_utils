@@ -123,7 +123,7 @@ class CameraBasePyLabLib(DAQ_Viewer_base):
 
     callback_signal = QtCore.Signal(Grab)
     live_mode_available = True
-    hardware_averaging = True
+    hardware_averaging = False
 
     def ini_attributes(self):
         self.controller = None
