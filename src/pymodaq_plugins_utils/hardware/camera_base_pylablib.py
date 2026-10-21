@@ -30,8 +30,8 @@ cam_params = [
     {'title': 'Color Conversion:', 'name': 'color_conversion', 'type': 'list',
      'limits': ['None', 'RGB2GRAY', 'BAYER_BG2RGB', 'BAYER_BG2GRAY']},
     {'title': 'ROI', 'name': 'roi', 'type': 'group', 'children': [
-        {'title': 'Update ROI from Viewer', 'name': 'update_roi', 'type': 'led', 'value': False},
-        {'title': 'Apply ROI', 'name': 'apply_roi', 'type': 'led', 'value': False},
+        {'title': 'Update ROI from Viewer', 'name': 'update_roi', 'type': 'led_push', 'value': False},
+        {'title': 'Apply ROI', 'name': 'apply_roi', 'type': 'led_push', 'value': False},
         {'title': 'Clear ROI+Bin', 'name': 'clear_roi', 'type': 'bool_push', 'value': False},
         {'title': 'ROI:', 'name': 'roi_slices', 'type': 'str', 'value': ''},
         {'title': 'X binning', 'name': 'x_binning', 'type': 'int', 'value': 1},
