@@ -123,7 +123,8 @@ class CameraBase(DAQ_Viewer_base):
     """Base implementation of a camera plugin
 
     The camera driver (``self.controller``, created in :meth:`ini_detector_custom`) follows
-    :class:`~pymodaq_plugins_utils.hardware.camera_driver.CameraDriverBase`.
+    :class:`~pymodaq_plugins_utils.hardware.camera_driver.CameraDriverBase`. If its ``get_pixel_size`` method returns
+    a size, the axes of the viewer are in micrometers, otherwise in pixels.
     """
     params = comon_parameters + cam_params
 
@@ -149,13 +150,23 @@ class CameraBase(DAQ_Viewer_base):
         self.data_shape: str = ''
 
 
+    @property
+    def pixel_size(self) -> Optional[Tuple[float, float]]:
+        """Size (x, y) of a sensor pixel in micrometers if the driver knows it, else None"""
+        get_pixel_size = getattr(self.controller, 'get_pixel_size', None)
+        return get_pixel_size() if get_pixel_size is not None else None
+
     def roi_select(self, roi_info: RoiInfo, ind_viewer: int = 0):
         """ Automatically called when a user use the RoiSelect ROi from a 2D viewer"""
         self.roi_select_info = roi_info
         self.roi_select_viewer_index = ind_viewer
 
         if self.settings['roi', 'update_roi']:
-            rows, columns = roi_info.to_slices()
+            rows, columns = roi_info.to_slices()  # in the units of the viewer axes
+            pixel_size = self.pixel_size
+            if pixel_size is not None:  # axes in um, back to pixels of the sensor
+                rows = slice(int(round(rows.start / pixel_size[1])), int(round(rows.stop / pixel_size[1])))
+                columns = slice(int(round(columns.start / pixel_size[0])), int(round(columns.stop / pixel_size[0])))
             self.roi_sensor_slices = (rows, columns)
             self.settings['roi', 'roi_slices'] = str(list(self.roi_sensor_slices))
             if self.settings['roi', 'apply_roi']:
@@ -181,8 +192,13 @@ class CameraBase(DAQ_Viewer_base):
         height, width = self.controller.get_data_dimensions()
         self.settings.child('roi', 'roi_slices').setValue(str([slice(vstart, vend, vbin), slice(hstart, hend, hbin)]))
 
-        self.x_axis = Axis('x_axis', offset=hstart, scaling=hbin, size=int(width), index=1)
-        self.y_axis = Axis('y_axis', offset=vstart, scaling=vbin, size=int(height), index=0)
+        pixel_size = self.pixel_size
+        x_size, y_size = pixel_size if pixel_size is not None else (1, 1)
+        units = 'µm' if pixel_size is not None else ''
+        self.x_axis = Axis('x_axis', units=units, offset=hstart * x_size, scaling=hbin * x_size, size=int(width),
+                           index=1)
+        self.y_axis = Axis('y_axis', units=units, offset=vstart * y_size, scaling=vbin * y_size, size=int(height),
+                           index=0)
 
     def clear_roi(self):
         """Full sensor, no binning"""

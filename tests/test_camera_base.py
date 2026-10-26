@@ -80,6 +80,11 @@ class FakeCamera(CameraDriverBase):
         self.closed = True
 
 
+class FakeCameraWithPixelSize(FakeCamera):
+    def get_pixel_size(self):
+        return 5.0, 10.0
+
+
 class DAQ_2DViewer_Fake(CameraBase):
     driver_class = FakeCamera
 
@@ -87,9 +92,20 @@ class DAQ_2DViewer_Fake(CameraBase):
         self.controller = self.driver_class() if self.is_master else controller
 
 
+class DAQ_2DViewer_FakeWithPixelSize(DAQ_2DViewer_Fake):
+    driver_class = FakeCameraWithPixelSize
+
+
 @pytest.fixture
 def camera(qapp):
     plugin = make_detector(DAQ_2DViewer_Fake)
+    yield plugin
+    plugin.close()
+
+
+@pytest.fixture
+def calibrated_camera(qapp):
+    plugin = make_detector(DAQ_2DViewer_FakeWithPixelSize)
     yield plugin
     plugin.close()
 
@@ -125,6 +141,7 @@ class TestDriverContract:
         driver = CameraDriverBase()
         assert driver.get_device_info() is None
         assert driver.get_roi_limits() is None
+        assert driver.get_pixel_size() is None
         driver.set_frame_format('array')
 
 
@@ -184,3 +201,23 @@ class TestCameraBase:
         controller = plugin.controller
         plugin.close()
         assert controller.closed
+
+
+class TestPixelSize:
+    def test_axes_are_calibrated(self, calibrated_camera):
+        dte = grab_and_wait(calibrated_camera)
+        assert calibrated_camera.x_axis.units == 'µm'
+        assert calibrated_camera.x_axis.scaling == pytest.approx(5.0)
+        assert calibrated_camera.y_axis.scaling == pytest.approx(10.0)
+        assert dte[0].shape == (HEIGHT, WIDTH)
+
+    def test_roi_drawn_on_calibrated_axes_is_converted_to_pixels(self, calibrated_camera):
+        select_roi(calibrated_camera, rows=slice(50, 150), columns=slice(50, 150))  # um: 5 to 15 rows, 10 to 30 cols
+        assert calibrated_camera.controller.get_roi() == (10, 30, 5, 15, 1, 1)
+        assert calibrated_camera.x_axis.offset == pytest.approx(50.0)
+        assert calibrated_camera.y_axis.offset == pytest.approx(50.0)
+
+    def test_binning_multiplies_the_scaling(self, calibrated_camera):
+        set_binning(calibrated_camera, 2, 1)
+        assert calibrated_camera.x_axis.scaling == pytest.approx(10.0)
+        assert calibrated_camera.x_axis.size == WIDTH // 2

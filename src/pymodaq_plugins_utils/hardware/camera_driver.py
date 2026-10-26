@@ -100,3 +100,11 @@ class CameraDriverBase:
 
     def set_frame_format(self, fmt: str):
         """Format of the returned frames, ``'array'`` for numpy arrays (the only one used here)."""
+
+    def get_pixel_size(self) -> Optional[Tuple[float, float]]:
+        """Size of a sensor pixel in micrometers as ``(x, y)``, or ``None`` if unknown.
+
+        When given, the axes of the 2D viewer are calibrated in micrometers instead of pixels. pylablib cameras
+        do not have this method, they keep axes in pixels.
+        """
+        return None
