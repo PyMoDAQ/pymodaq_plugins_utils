@@ -1,5 +1,6 @@
 """The camera plugin base class, driven by a fake camera driver (no pylablib, no hardware)"""
 import importlib.util
+import time
 
 import numpy as np
 import pytest
@@ -13,7 +14,7 @@ except ModuleNotFoundError:  # pymodaq is not installed
 if not available:
     pytest.skip('The harness needs PyMoDAQ >= 5.3.2', allow_module_level=True)
 
-from pymodaq.utils.plugin_testing import make_detector, grab_and_wait
+from pymodaq.utils.plugin_testing import make_detector, grab_and_wait, wait_for_signal
 
 try:
     from pymodaq_gui.plotting.items.roi import RoiInfo  # pymodaq > 5.1.x
@@ -46,6 +47,8 @@ class FakeCamera(CameraDriverBase):
         return self.roi
 
     def set_roi(self, hstart=0, hend=None, vstart=0, vend=None, hbin=1, vbin=1):
+        if self.running:
+            raise RuntimeError('The ROI cannot change during the acquisition')  # as most cameras
         self.roi = (hstart, WIDTH if hend is None else hend, vstart, HEIGHT if vend is None else vend, hbin, vbin)
 
     def set_exposure(self, exposure):
@@ -64,7 +67,9 @@ class FakeCamera(CameraDriverBase):
         return self.running
 
     def wait_for_frame(self, since='lastread', nframes=1, timeout=20.0):
-        pass
+        if self.running:
+            time.sleep(0.005)  # the exposure
+        return self.running  # as pylablib, False if the acquisition is stopped
 
     def read_newest_image(self, peek=False):
         hstart, hend, vstart, vend, hbin, vbin = self.roi
@@ -73,8 +78,11 @@ class FakeCamera(CameraDriverBase):
         return crop.reshape(height, vbin, width, hbin).mean(axis=(1, 3))
 
     def read_multiple_images(self, rng=None, peek=False, missing_frame='skip', return_rng=False):
-        frames = self.read_newest_image()[None, ...]
-        return (frames, (0, 1)) if return_rng else frames
+        if self.running:
+            frames, rng = self.read_newest_image()[None, ...], (0, 1)
+        else:
+            frames, rng = np.zeros((0,) + self.get_data_dimensions()), (0, 0)
+        return (frames, rng) if return_rng else frames
 
     def close(self):
         self.closed = True
@@ -195,6 +203,18 @@ class TestCameraBase:
         camera.commit_settings(clear)
         assert camera.controller.get_roi() == (0, WIDTH, 0, HEIGHT, 1, 1)
         assert grab_and_wait(camera)[0].shape == (HEIGHT, WIDTH)
+
+    def test_roi_change_during_live_restarts_it_with_the_new_roi(self, camera):
+        wait_for_signal(camera.dte_signal, lambda: camera.grab_data(1, live=True), timeout_ms=3000)
+        assert camera.is_live
+        select_roi(camera, rows=slice(5, 15), columns=slice(10, 30))
+        assert camera.controller.get_roi() == (10, 30, 5, 15, 1, 1)
+        dte = wait_for_signal(camera.dte_signal, lambda: None, timeout_ms=3000)
+        while dte[0].shape != (10, 20):  # images of the old ROI may still be on their way
+            dte = wait_for_signal(camera.dte_signal, lambda: None, timeout_ms=3000)
+        camera.stop()
+        assert not camera.is_live
+        assert not camera.controller.acquisition_in_progress()
 
     def test_close_releases_the_camera(self, qapp):
         plugin = make_detector(DAQ_2DViewer_Fake)

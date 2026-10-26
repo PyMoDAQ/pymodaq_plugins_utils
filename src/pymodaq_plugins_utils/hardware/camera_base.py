@@ -94,6 +94,11 @@ class CameraCallback(QtCore.QObject):
                     while ind_frames < mode.nframes:
                         self.controller.wait_for_frame(since='now')
                         new_frames, rng = self.controller.read_multiple_images(missing_frame='skip', return_rng=True)
+                        if rng[1] == rng[0]:  # no new frame: the acquisition was stopped while waiting for it
+                            QtWidgets.QApplication.processEvents()  # let the signal that stops this loop be handled
+                            if not self.do_acquisition or not self.controller.acquisition_in_progress():
+                                return
+                            continue
 
                         # in case hardware has a random buffer size (ex: Andor CCD cameras)
                         if new_frames.shape[0] != mode.nframes:
@@ -219,13 +224,16 @@ class CameraBase(DAQ_Viewer_base):
         new_roi = tuple(int(value) for value in new_roi)
         if new_roi != tuple(self.controller.get_roi()):
             (hstart, hend, vstart, vend, hbin, vbin) = new_roi
+            was_live = self.is_live
+            self.stop()  # most cameras do not change the ROI while they acquire
             self.controller.set_roi(hstart=hstart, hend=hend, vstart=vstart, vend=vend, hbin=hbin, vbin=vbin)
             self.emit_status(ThreadCommand('Update_Status', [f'Changed ROI: {new_roi}']))
-            self.controller.clear_acquisition()
             self.controller.setup_acquisition()
             # Finally, prepare view for displaying the new data
             self.compute_axes()
             self._prepare_view()
+            if was_live:
+                self.grab_data(self.Naverage, live=True)
 
     def commit_settings(self, param: Parameter):
         """Apply the consequences of a change of value in the detector settings
@@ -502,6 +510,7 @@ class CameraBase(DAQ_Viewer_base):
 
     def stop(self):
         """Stop the acquisition."""
+        self.is_live = False
         self.callback_signal.emit(Grab(do_acquisition=False))
         QtWidgets.QApplication.processEvents()
         self.controller.clear_acquisition()
