@@ -1,0 +1,186 @@
+"""The camera plugin base class, driven by a fake camera driver (no pylablib, no hardware)"""
+import importlib.util
+
+import numpy as np
+import pytest
+
+from pymodaq_plugins_utils.hardware.camera_driver import CameraDriverBase
+
+try:
+    available = importlib.util.find_spec('pymodaq.utils.plugin_testing') is not None
+except ModuleNotFoundError:  # pymodaq is not installed
+    available = False
+if not available:
+    pytest.skip('The harness needs PyMoDAQ >= 5.3.2', allow_module_level=True)
+
+from pymodaq.utils.plugin_testing import make_detector, grab_and_wait
+
+try:
+    from pymodaq_gui.plotting.items.roi import RoiInfo  # pymodaq > 5.1.x
+except ImportError:
+    from pymodaq_gui.plotting.utils.plot_utils import RoiInfo
+
+from pymodaq_plugins_utils.hardware.camera_base import CameraBase
+
+WIDTH, HEIGHT = 40, 30
+
+
+class FakeCamera(CameraDriverBase):
+    """A sensor whose pixel (row, column) is worth 100 * row + column, with ROI and binning"""
+
+    def __init__(self):
+        self.sensor = 100. * np.arange(HEIGHT)[:, None] + np.arange(WIDTH)[None, :]
+        self.roi = (0, WIDTH, 0, HEIGHT, 1, 1)
+        self.exposure = None
+        self.running = False
+        self.closed = False
+
+    def get_detector_size(self):
+        return WIDTH, HEIGHT
+
+    def get_data_dimensions(self):
+        hstart, hend, vstart, vend, hbin, vbin = self.roi
+        return (vend - vstart) // vbin, (hend - hstart) // hbin
+
+    def get_roi(self):
+        return self.roi
+
+    def set_roi(self, hstart=0, hend=None, vstart=0, vend=None, hbin=1, vbin=1):
+        self.roi = (hstart, WIDTH if hend is None else hend, vstart, HEIGHT if vend is None else vend, hbin, vbin)
+
+    def set_exposure(self, exposure):
+        self.exposure = exposure
+
+    def setup_acquisition(self):
+        pass
+
+    def clear_acquisition(self):
+        self.running = False
+
+    def start_acquisition(self, nframes=1):
+        self.running = True
+
+    def acquisition_in_progress(self):
+        return self.running
+
+    def wait_for_frame(self, since='lastread', nframes=1, timeout=20.0):
+        pass
+
+    def read_newest_image(self, peek=False):
+        hstart, hend, vstart, vend, hbin, vbin = self.roi
+        height, width = self.get_data_dimensions()
+        crop = self.sensor[vstart:vstart + height * vbin, hstart:hstart + width * hbin]
+        return crop.reshape(height, vbin, width, hbin).mean(axis=(1, 3))
+
+    def read_multiple_images(self, rng=None, peek=False, missing_frame='skip', return_rng=False):
+        frames = self.read_newest_image()[None, ...]
+        return (frames, (0, 1)) if return_rng else frames
+
+    def close(self):
+        self.closed = True
+
+
+class DAQ_2DViewer_Fake(CameraBase):
+    driver_class = FakeCamera
+
+    def ini_detector_custom(self, controller=None):
+        self.controller = self.driver_class() if self.is_master else controller
+
+
+@pytest.fixture
+def camera(qapp):
+    plugin = make_detector(DAQ_2DViewer_Fake)
+    yield plugin
+    plugin.close()
+
+
+def select_roi(plugin, rows: slice, columns: slice):
+    """What the user does: draw a ROI in the viewer, update it, then apply it"""
+    plugin.settings.child('roi', 'update_roi').setValue(True)
+    plugin.roi_select(RoiInfo.from_slices([rows, columns]))
+    apply_roi = plugin.settings.child('roi', 'apply_roi')
+    apply_roi.setValue(True)
+    plugin.commit_settings(apply_roi)
+
+
+def set_binning(plugin, xbin: int, ybin: int):
+    for name, value in (('x_binning', xbin), ('y_binning', ybin)):
+        param = plugin.settings.child('roi', name)
+        param.setValue(value)
+        plugin.commit_settings(param)
+
+
+class TestDriverContract:
+    @pytest.mark.parametrize('method, args', [
+        ('get_detector_size', ()), ('get_data_dimensions', ()), ('get_roi', ()), ('set_roi', ()),
+        ('set_exposure', (0.1,)), ('setup_acquisition', ()), ('clear_acquisition', ()), ('start_acquisition', ()),
+        ('acquisition_in_progress', ()), ('wait_for_frame', ()), ('read_multiple_images', ()),
+        ('read_newest_image', ()), ('close', ()),
+    ])
+    def test_what_a_driver_has_to_implement(self, method, args):
+        with pytest.raises(NotImplementedError):
+            getattr(CameraDriverBase(), method)(*args)
+
+    def test_optional_methods_are_harmless(self):
+        driver = CameraDriverBase()
+        assert driver.get_device_info() is None
+        assert driver.get_roi_limits() is None
+        driver.set_frame_format('array')
+
+
+class TestCameraBase:
+    def test_grab_a_full_frame(self, camera):
+        dte = grab_and_wait(camera)
+        assert dte[0].shape == (HEIGHT, WIDTH)
+        assert dte[0][0][3, 7] == pytest.approx(307)
+        assert (camera.x_axis.size, camera.y_axis.size) == (WIDTH, HEIGHT)
+
+    def test_exposure_is_sent_in_seconds(self, camera):
+        param = camera.settings.child('timing_opts', 'exposure_time')
+        param.setValue(50)
+        camera.commit_settings(param)
+        assert camera.controller.exposure == pytest.approx(0.05)
+
+    def test_axes_are_in_pixels_when_the_driver_does_not_know_the_pixel_size(self, camera):
+        assert camera.x_axis.units == ''
+        assert camera.x_axis.scaling == 1
+        assert camera.x_axis.offset == 0
+
+    def test_roi_selected_in_the_viewer_becomes_the_camera_roi(self, camera):
+        select_roi(camera, rows=slice(5, 15), columns=slice(10, 30))
+        assert camera.controller.get_roi() == (10, 30, 5, 15, 1, 1)
+        dte = grab_and_wait(camera)
+        assert dte[0].shape == (10, 20)
+        assert dte[0][0][0, 0] == pytest.approx(5 * 100 + 10)
+        assert camera.x_axis.offset == 10
+        assert camera.y_axis.offset == 5
+
+    def test_roi_is_kept_inside_the_sensor(self, camera):
+        select_roi(camera, rows=slice(-5, 15), columns=slice(10, 100))
+        assert camera.controller.get_roi() == (10, WIDTH, 0, 15, 1, 1)
+
+    def test_changing_the_binning_keeps_the_roi(self, camera):
+        select_roi(camera, rows=slice(5, 15), columns=slice(10, 30))
+        set_binning(camera, 2, 5)
+        assert camera.controller.get_roi() == (10, 30, 5, 15, 2, 5)
+        dte = grab_and_wait(camera)
+        assert dte[0].shape == (2, 10)
+        assert camera.x_axis.size == 10
+        assert camera.x_axis.scaling == 2
+        assert camera.y_axis.size == 2
+        assert camera.y_axis.scaling == 5
+
+    def test_clear_roi_goes_back_to_the_full_sensor(self, camera):
+        select_roi(camera, rows=slice(5, 15), columns=slice(10, 30))
+        set_binning(camera, 2, 2)
+        clear = camera.settings.child('roi', 'clear_roi')
+        clear.setValue(True)
+        camera.commit_settings(clear)
+        assert camera.controller.get_roi() == (0, WIDTH, 0, HEIGHT, 1, 1)
+        assert grab_and_wait(camera)[0].shape == (HEIGHT, WIDTH)
+
+    def test_close_releases_the_camera(self, qapp):
+        plugin = make_detector(DAQ_2DViewer_Fake)
+        controller = plugin.controller
+        plugin.close()
+        assert controller.closed

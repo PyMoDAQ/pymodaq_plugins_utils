@@ -34,14 +34,14 @@ logger = set_logger(get_module_name(__file__))
 
 
 cam_params = [
-    {'title': 'Camera name:', 'name': 'camera_name', 'type': 'str', 'value': ''},
+    {'title': 'Camera name:', 'name': 'camera_name', 'type': 'str', 'value': '', 'readonly': True},
     {'title': 'Color Conversion:', 'name': 'color_conversion', 'type': 'list',
      'limits': ['None', 'RGB2GRAY', 'BAYER_BG2RGB', 'BAYER_BG2GRAY'] if cv2 is not None else ['None']},
     {'title': 'ROI', 'name': 'roi', 'type': 'group', 'children': [
         {'title': 'Update ROI from Viewer', 'name': 'update_roi', 'type': 'led', 'value': False},
         {'title': 'Apply ROI', 'name': 'apply_roi', 'type': 'led', 'value': False},
         {'title': 'Clear ROI+Bin', 'name': 'clear_roi', 'type': 'bool_push', 'value': False},
-        {'title': 'ROI:', 'name': 'roi_slices', 'type': 'str', 'value': ''},
+        {'title': 'ROI:', 'name': 'roi_slices', 'type': 'str', 'value': '', 'readonly': True},
         {'title': 'X binning', 'name': 'x_binning', 'type': 'int', 'value': 1},
         {'title': 'Y binning', 'name': 'y_binning', 'type': 'int', 'value': 1},
     ], },
@@ -141,6 +141,7 @@ class CameraBase(DAQ_Viewer_base):
         self.y_axis: Axis = None
 
         self.roi_select_info: RoiInfo = None
+        self.roi_sensor_slices: Optional[Tuple[slice, slice]] = None  # (rows, columns), in pixels of the full sensor
 
         self.last_tick = 0.0  # time counter used to compute FPS
         self.fps = 0.0
@@ -154,52 +155,61 @@ class CameraBase(DAQ_Viewer_base):
         self.roi_select_viewer_index = ind_viewer
 
         if self.settings['roi', 'update_roi']:
-            self.settings['roi', 'roi_slices'] = str(roi_info.to_slices())
+            rows, columns = roi_info.to_slices()
+            self.roi_sensor_slices = (rows, columns)
+            self.settings['roi', 'roi_slices'] = str(list(self.roi_sensor_slices))
             if self.settings['roi', 'apply_roi']:
                 self.apply_roi()
 
     def apply_roi(self):
-        roi_info = RoiInfo.from_slices(eval(self.settings['roi', 'roi_slices']))
-        new_roi = (roi_info.origin[1], roi_info.size[1], self.settings['roi', 'x_binning'],
-                   roi_info.origin[0], roi_info.size[0], self.settings['roi', 'y_binning'])
-        self.update_rois(new_roi)
+        """Set the ROI of the camera from the one last selected in the viewer"""
+        if self.roi_sensor_slices is None:
+            return
+        width, height = self.controller.get_detector_size()
+        rows, columns = self.roi_sensor_slices
+        hstart, hend = max(columns.start, 0), min(columns.stop, width)
+        vstart, vend = max(rows.start, 0), min(rows.stop, height)
+        if hend <= hstart or vend <= vstart:
+            self.emit_status(ThreadCommand('Update_Status', ['The ROI is outside of the sensor', 'log']))
+            return
+        self.update_rois((hstart, hend, vstart, vend,
+                          self.settings['roi', 'x_binning'], self.settings['roi', 'y_binning']))
 
     def compute_axes(self):
+        """Axes of the viewer from the current ROI and binning of the camera"""
         (hstart, hend, vstart, vend, hbin, vbin) = self.controller.get_roi()
-        slices = [slice(vstart, vend, vbin), slice(hstart, hend, hbin)]
-        self.settings.child('roi', 'roi_slices').setValue(str(slices))
-        roi_info = RoiInfo.from_slices(slices)
+        height, width = self.controller.get_data_dimensions()
+        self.settings.child('roi', 'roi_slices').setValue(str([slice(vstart, vend, vbin), slice(hstart, hend, hbin)]))
 
-        self.x_axis = Axis('x_axis', offset=roi_info.origin[1],
-                           scaling=self.settings['roi', 'x_binning'],
-                           size=int(roi_info.size[1]),
-                           index=1)
-        self.y_axis = Axis('y_axis', offset=roi_info.origin[0],
-                           scaling=self.settings['roi', 'y_binning'],
-                           size=int(roi_info.size[0]),
-                           index=0)
+        self.x_axis = Axis('x_axis', offset=hstart, scaling=hbin, size=int(width), index=1)
+        self.y_axis = Axis('y_axis', offset=vstart, scaling=vbin, size=int(height), index=0)
 
     def clear_roi(self):
+        """Full sensor, no binning"""
         wdet, hdet = self.controller.get_detector_size()
         self.settings.child('roi', 'x_binning').setValue(1)
         self.settings.child('roi', 'y_binning').setValue(1)
 
-        new_roi = (0, wdet, 1, 0, hdet, 1)
-        self.update_rois(new_roi)
+        self.update_rois((0, wdet, 0, hdet, 1, 1))
 
-    def update_rois(self, new_roi):
-        # In pylablib, ROIs compare as tuples
-        (new_x, new_width, new_xbinning, new_y, new_height, new_ybinning) = new_roi
-        if new_roi != self.controller.get_roi():
-            # self.controller.set_attribute_value("ROIs",[new_roi])
-            self.controller.set_roi(hstart=new_x, hend=new_x + new_width, vstart=new_y, vend=new_y + new_height,
-                                    hbin=new_xbinning, vbin=new_ybinning)
+    def update_rois(self, new_roi: Tuple[int, int, int, int, int, int]):
+        """Set the ROI and binning of the camera if they changed
+
+        Parameters
+        ----------
+        new_roi: tuple of int
+            As in pylablib: (hstart, hend, vstart, vend, hbin, vbin)
+        """
+        new_roi = tuple(int(value) for value in new_roi)
+        if new_roi != tuple(self.controller.get_roi()):
+            (hstart, hend, vstart, vend, hbin, vbin) = new_roi
+            self.controller.set_roi(hstart=hstart, hend=hend, vstart=vstart, vend=vend, hbin=hbin, vbin=vbin)
             self.emit_status(ThreadCommand('Update_Status', [f'Changed ROI: {new_roi}']))
             self.controller.clear_acquisition()
             self.controller.setup_acquisition()
             # Finally, prepare view for displaying the new data
-            self._prepare_view()
             self.compute_axes()
+            self._prepare_view()
 
     def commit_settings(self, param: Parameter):
         """Apply the consequences of a change of value in the detector settings
@@ -223,11 +233,10 @@ class CameraBase(DAQ_Viewer_base):
 
         elif param.name() in ['x_binning', 'y_binning']:
             # We handle ROI and binning separately for clarity
-            (x0, w, y0, h, *_) = self.controller.get_roi()  # Get current ROI
+            (hstart, hend, vstart, vend, *_) = self.controller.get_roi()  # Get current ROI
             xbin = self.settings['roi', 'x_binning']
             ybin = self.settings['roi', 'y_binning']
-            new_roi = (x0, w, xbin, y0, h, ybin)
-            self.update_rois(new_roi)
+            self.update_rois((hstart, hend, vstart, vend, xbin, ybin))
 
         elif param.name() == "clear_roi":
             if param.value():   # Switching on ROI
@@ -292,8 +301,6 @@ class CameraBase(DAQ_Viewer_base):
         self.settings.child('roi', 'y_binning').setValue(vbin)
         self.settings.child('hdet').setValue(width)
         self.settings.child('vdet').setValue(height)
-        slices = [slice(vstart, vend, vbin), slice(hstart, hend, hbin)]
-        self.settings.child('roi', 'roi_slices').setValue(str(slices))
         self.compute_axes()
 
     @property
@@ -343,10 +350,11 @@ class CameraBase(DAQ_Viewer_base):
         if data_shape != self.data_shape:
             self.data_shape = data_shape
             # init the viewers
-            self.data_grabed_signal_temp.emit([DataFromPlugins(name='Thorlabs Camera',
-                                                               data=[np.squeeze(mock_data)],
-                                                               dim=self.data_shape,
-                                                               labels=[f'ThorCam_{self.data_shape}'])])
+            self.dte_signal_temp.emit(DataToExport('Camera',
+                                                   data=[DataFromPlugins(name='Camera',
+                                                                         data=[np.squeeze(mock_data)],
+                                                                         dim=self.data_shape,
+                                                                         labels=[f'Camera_{self.data_shape}'])]))
             QtWidgets.QApplication.processEvents()
 
     def grab_data(self, Naverage=1, **kwargs):
