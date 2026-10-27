@@ -231,11 +231,12 @@ class CameraBase(DAQ_Viewer_base):
 
     def update_roi_from_viewer(self):
         """Compute the ROI of the sensor, in pixels, from the one last selected in the viewer"""
-        rows, columns = self.roi_select_info.to_slices()  # in the units of the viewer axes
-        pixel_size = self.pixel_size
-        if pixel_size is not None:  # axes in um, back to pixels of the sensor
-            rows = slice(int(round(rows.start / pixel_size[1])), int(round(rows.stop / pixel_size[1])))
-            columns = slice(int(round(columns.start / pixel_size[0])), int(round(columns.stop / pixel_size[0])))
+        # the slices are in the values of the axes of the viewer (pixels of the sensor, or um if the pixel size is known).
+        # They are kept as floats: a truncation to integers would be wrong in um.
+        rows, columns = self.roi_select_info.to_slices(as_integer=False)
+        x_size, y_size = self.pixel_size if self.pixel_size is not None else (1, 1)
+        rows = slice(int(round(rows.start / y_size)), int(round(rows.stop / y_size)))
+        columns = slice(int(round(columns.start / x_size)), int(round(columns.stop / x_size)))
         self.roi_sensor_slices = (rows, columns)
         self.settings['roi', 'roi_slices'] = str(list(self.roi_sensor_slices))
 

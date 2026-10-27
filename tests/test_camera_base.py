@@ -311,6 +311,11 @@ class TestPixelSize:
         assert calibrated_camera.y_axis.scaling == pytest.approx(10.0)
         assert dte[0].shape == (HEIGHT, WIDTH)
 
+    def test_roi_with_fractional_values_is_rounded_in_pixels_not_truncated_in_um(self, calibrated_camera):
+        # 5 um x 10 um pixels: 52.4 -> 10.48 and 157.6 -> 31.52 pixels (columns), 53 -> 5.3 and 147 -> 14.7 (rows)
+        select_roi(calibrated_camera, rows=slice(53.0, 147.0), columns=slice(52.4, 157.6))
+        assert calibrated_camera.controller.get_roi() == (10, 32, 5, 15, 1, 1)
+
     def test_roi_drawn_on_calibrated_axes_is_converted_to_pixels(self, calibrated_camera):
         select_roi(calibrated_camera, rows=slice(50, 150), columns=slice(50, 150))  # um: 5 to 15 rows, 10 to 30 cols
         assert calibrated_camera.controller.get_roi() == (10, 30, 5, 15, 1, 1)
