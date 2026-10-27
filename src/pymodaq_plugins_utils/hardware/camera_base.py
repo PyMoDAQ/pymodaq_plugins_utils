@@ -17,7 +17,7 @@ from pymodaq_data import DataToExport
 from pymodaq_utils.logger import set_logger, get_module_name
 from pymodaq_utils.utils import ThreadCommand
 from pymodaq_gui.parameter import Parameter
-from pymodaq_gui.utils.widgets import StatusPalette, Status
+from pymodaq_gui.utils.widgets import Status
 try:
     from pymodaq_gui.plotting.items.roi import RoiInfo  # pymodaq > 5.1.x
 except ImportError:
@@ -34,11 +34,9 @@ from time import perf_counter
 logger = set_logger(get_module_name(__file__))
 
 
-# States of the LEDs of the ROI: grey when not activated, blue while applying, green when activated, orange on error.
-# They are set by the plugin, the user only clicks the button of the parameter. Colors are given as hex strings so that
-# the parameters can be copied.
-ROI_LED_STATES = [(status.value, StatusPalette.color(status).name())
-                  for status in (Status.OFF, Status.RUNNING, Status.IDLE, Status.ERROR)]
+# States of the LEDs of the ROI buttons (Status workflow): grey when the button is released, blue while the change is
+# applied, green when it is, orange on error. They are set by the plugin, the user only presses or releases the button.
+ROI_LED_STATES = [Status.OFF, Status.RUNNING, Status.IDLE, Status.ERROR]
 
 cam_params = [
     {'title': 'Camera name:', 'name': 'camera_name', 'type': 'str', 'value': '', 'readonly': True},
@@ -46,9 +44,9 @@ cam_params = [
      'limits': ['None', 'RGB2GRAY', 'BAYER_BG2RGB', 'BAYER_BG2GRAY'] if cv2 is not None else ['None']},
     {'title': 'ROI', 'name': 'roi', 'type': 'group', 'children': [
         {'title': 'Update ROI from Viewer', 'name': 'update_roi', 'type': 'action_led',
-         'value': Status.OFF.value, 'label': 'Update', 'states': ROI_LED_STATES},
+         'value': Status.OFF.value, 'label': 'Update', 'states': ROI_LED_STATES, 'checkable': True},
         {'title': 'Apply ROI', 'name': 'apply_roi', 'type': 'action_led',
-         'value': Status.OFF.value, 'label': 'Apply', 'states': ROI_LED_STATES},
+         'value': Status.OFF.value, 'label': 'Apply', 'states': ROI_LED_STATES, 'checkable': True},
         {'title': 'Clear ROI+Bin', 'name': 'clear_roi', 'type': 'bool_push', 'value': False},
         {'title': 'ROI:', 'name': 'roi_slices', 'type': 'str', 'value': '', 'readonly': True},
         {'title': 'X binning', 'name': 'x_binning', 'type': 'int', 'value': 1},
@@ -181,30 +179,55 @@ class CameraBase(DAQ_Viewer_base):
 
     def _set_roi_led(self, name: str, status: Status):
         """Show the state of the 'update_roi' or 'apply_roi' LED"""
-        self.settings.child('roi', name).setValue(status.value)
+        self.settings.child('roi', name).setValue(status)
 
     def _roi_led_is(self, name: str, status: Status) -> bool:
-        return self.settings['roi', name] == status.value
+        return self.settings['roi', name] == status
 
-    def _on_update_roi(self, *args):
-        """The user clicked 'Update ROI from Viewer': take the ROI now in the viewer. The LED is green while the ROI
-        of the viewer is followed, orange if there is none to take"""
-        if self.roi_select_info is None:
-            self._set_roi_led('update_roi', Status.ERROR)
-            self.emit_status(ThreadCommand('Update_Status', ['No ROI selected in the viewer', 'log']))
+    def _fail_roi_button(self, name: str, message: str):
+        """The change asked by the button could not be done: orange LED, the button is released"""
+        self._set_roi_led(name, Status.ERROR)
+        self.settings.child('roi', name).setOpts(checked=False)
+        self.emit_status(ThreadCommand('Update_Status', [message, 'log']))
+
+    def _on_update_roi(self, param):
+        """The user pressed or released 'Update ROI from Viewer'
+
+        Pressed: take the ROI now in the viewer (blue LED while it is taken, green once it is, orange if there is
+        none to take) and follow the ROI of the viewer. Released: stop following it (grey LED).
+        """
+        if not param.opts.get('checked', False):
+            self._set_roi_led('update_roi', Status.OFF)
             return
+        if self.roi_select_info is None:
+            self._fail_roi_button('update_roi', 'No ROI selected in the viewer')
+            return
+        self._set_roi_led('update_roi', Status.RUNNING)
         self.update_roi_from_viewer()
         self._set_roi_led('update_roi', Status.IDLE)
         if self._roi_led_is('apply_roi', Status.IDLE):
             self.apply_roi()
 
-    def _on_apply_roi(self, *args):
-        """The user clicked 'Apply ROI': apply the ROI selected in the viewer (the one last taken, or the one now in
-        the viewer if none was taken). The LED stays green, and the ROI of the viewer is applied again when it
-        changes, until the ROI is cleared"""
+    def _on_apply_roi(self, param):
+        """The user pressed or released 'Apply ROI'
+
+        Pressed: apply the ROI selected in the viewer (the one last taken, or the one now in the viewer if none was
+        taken), and apply it again when it changes. Released: the camera goes back to the full sensor (grey LED).
+        """
+        if not param.opts.get('checked', False):
+            self._set_roi_led('apply_roi', Status.RUNNING)
+            self.release_roi()
+            self._set_roi_led('apply_roi', Status.OFF)
+            return
         if self.roi_sensor_slices is None and self.roi_select_info is not None:
             self.update_roi_from_viewer()
         self.apply_roi()
+
+    def release_roi(self):
+        """Full sensor, with the binning, the ROI selected in the viewer is kept"""
+        wdet, hdet = self.controller.get_detector_size()
+        self.update_rois((0, wdet, 0, hdet,
+                          self.settings['roi', 'x_binning'], self.settings['roi', 'y_binning']))
 
     def update_roi_from_viewer(self):
         """Compute the ROI of the sensor, in pixels, from the one last selected in the viewer"""
@@ -232,16 +255,14 @@ class CameraBase(DAQ_Viewer_base):
         The 'apply_roi' LED is blue while the ROI is applied, then green, or orange if it cannot be applied.
         """
         if self.roi_sensor_slices is None:
-            self._set_roi_led('apply_roi', Status.ERROR)
-            self.emit_status(ThreadCommand('Update_Status', ['No ROI selected in the viewer', 'log']))
+            self._fail_roi_button('apply_roi', 'No ROI selected in the viewer')
             return
         width, height = self.controller.get_detector_size()
         rows, columns = self.roi_sensor_slices
         hstart, hend = max(columns.start, 0), min(columns.stop, width)
         vstart, vend = max(rows.start, 0), min(rows.stop, height)
         if hend <= hstart or vend <= vstart:
-            self._set_roi_led('apply_roi', Status.ERROR)
-            self.emit_status(ThreadCommand('Update_Status', ['The ROI is outside of the sensor', 'log']))
+            self._fail_roi_button('apply_roi', 'The ROI is outside of the sensor')
             return
         self._set_roi_led('apply_roi', Status.RUNNING)
         try:
@@ -249,8 +270,7 @@ class CameraBase(DAQ_Viewer_base):
                               self.settings['roi', 'x_binning'], self.settings['roi', 'y_binning']))
         except Exception as exc:
             logger.exception(exc)
-            self._set_roi_led('apply_roi', Status.ERROR)
-            self.emit_status(ThreadCommand('Update_Status', [f'The ROI could not be applied: {exc}', 'log']))
+            self._fail_roi_button('apply_roi', f'The ROI could not be applied: {exc}')
             return
         self._set_roi_led('apply_roi', Status.IDLE)
 
@@ -278,8 +298,9 @@ class CameraBase(DAQ_Viewer_base):
 
         self.update_rois((0, wdet, 0, hdet, 1, 1))
         self.roi_sensor_slices = None
-        self._set_roi_led('update_roi', Status.OFF)
-        self._set_roi_led('apply_roi', Status.OFF)
+        for name in ('update_roi', 'apply_roi'):
+            self._set_roi_led(name, Status.OFF)
+            self.settings.child('roi', name).setOpts(checked=False)
 
     def update_rois(self, new_roi: Tuple[int, int, int, int, int, int]):
         """Set the ROI and binning of the camera if they changed

@@ -118,9 +118,11 @@ def calibrated_camera(qapp):
     plugin.close()
 
 
-def click_led(plugin, name: str):
-    """What the user does: click the button of the parameter, which the DAQ_Viewer sends to the plugin"""
-    plugin.settings.child('roi', name).activate()
+def click_led(plugin, name: str, pressed: bool = True):
+    """What the user does: press (or release) the button of the parameter, which the DAQ_Viewer sends to the plugin"""
+    param = plugin.settings.child('roi', name)
+    param.opts['checked'] = pressed
+    param.activate()
 
 
 def select_roi(plugin, rows: slice, columns: slice):
@@ -211,6 +213,27 @@ class TestCameraBase:
     def test_updating_without_roi_in_the_viewer_is_an_error(self, camera):
         click_led(camera, 'update_roi')
         assert roi_leds(camera) == ('error', 'off')
+        assert not camera.settings.child('roi', 'update_roi').opts['checked']  # the button is released
+
+    def test_releasing_update_stops_following_the_viewer(self, camera):
+        select_roi(camera, rows=slice(5, 15), columns=slice(10, 30))
+        click_led(camera, 'update_roi', pressed=False)
+        assert roi_leds(camera) == ('off', 'idle')
+
+        camera.roi_select(RoiInfo.from_slices([slice(0, 10), slice(0, 10)]))
+        assert camera.controller.get_roi() == (10, 30, 5, 15, 1, 1)
+
+    def test_releasing_apply_goes_back_to_the_full_sensor(self, camera):
+        select_roi(camera, rows=slice(5, 15), columns=slice(10, 30))
+        click_led(camera, 'apply_roi', pressed=False)
+        assert roi_leds(camera) == ('idle', 'off')
+        assert camera.controller.get_roi() == (0, WIDTH, 0, HEIGHT, 1, 1)
+        assert camera.settings['hdet'] == WIDTH
+        assert camera.roi_sensor_slices == (slice(5, 15), slice(10, 30))  # applying again gives the same ROI
+
+        click_led(camera, 'apply_roi')
+        assert camera.controller.get_roi() == (10, 30, 5, 15, 1, 1)
+        assert roi_leds(camera) == ('idle', 'idle')
 
     def test_applying_computes_the_image_size(self, camera):
         select_roi(camera, rows=slice(5, 15), columns=slice(10, 30))
