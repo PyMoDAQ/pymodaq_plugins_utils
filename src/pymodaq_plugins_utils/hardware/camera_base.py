@@ -107,17 +107,17 @@ class CameraCallback(QtCore.QObject):
                                 return
                             continue
 
-                        # in case hardware has a random buffer size (ex: Andor CCD cameras)
-                        if new_frames.shape[0] != mode.nframes:
-                            new_frames = np.expand_dims(new_frames[-mode.nframes:], axis=0)
+                        # the camera may have kept more frames than the ones still missing (ex: nobody read while it
+                        # was acquiring, or Andor CCD cameras with a random buffer size): keep the newest ones
+                        n_missing = mode.nframes - ind_frames
+                        new_frames = new_frames[-n_missing:]
+                        n_new = new_frames.shape[0]
 
                         if ind_average == 0 and ind_frames == 0:
-                            shape = list(new_frames.shape[1:])
-                            shape = [mode.n_average, mode.nframes] + shape
+                            shape = [mode.n_average, mode.nframes] + list(new_frames.shape[1:])
                             frames = np.zeros(shape, dtype=new_frames.dtype)
-                        nacq = rng[1] - rng[0]
-                        frames[ind_average, ind_frames:nacq, ...] = new_frames
-                        ind_frames += nacq
+                        frames[ind_average, ind_frames:ind_frames + n_new, ...] = new_frames
+                        ind_frames += n_new
                     ind_average += 1
                 self.data_sig.emit(frames)
                 QtCore.QThread.msleep(10)
