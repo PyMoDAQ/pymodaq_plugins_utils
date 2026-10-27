@@ -146,7 +146,7 @@ class CameraBase(DAQ_Viewer_base):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        # the activation of the buttons is sent by the DAQ_Viewer to the thread of the plugin (pymodaq >= 5.3.2)
+        # the activation of the buttons is sent by the DAQ_Viewer to the thread of the plugin (pymodaq >= 5.3.9)
         for name, slot in (('update_roi', self._on_update_roi), ('apply_roi', self._on_apply_roi)):
             try:
                 self.settings.child('roi', name).sigActivated.connect(slot)
