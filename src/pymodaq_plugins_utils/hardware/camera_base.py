@@ -130,11 +130,18 @@ class CameraBase(DAQ_Viewer_base):
     The camera driver (``self.controller``, created in :meth:`ini_detector_custom`) follows
     :class:`~pymodaq_plugins_utils.hardware.camera_driver.CameraDriverBase`. If its ``get_pixel_size`` method returns
     a size, the axes of the viewer are in micrometers, otherwise in pixels.
+
+    ``live_mode_available`` and ``hardware_averaging`` are independent (see the *Live Mode* section of the PyMoDAQ
+    documentation): in live mode the viewer calls ``grab_data`` once and the camera thread emits the frames until
+    ``stop`` is called, and ``hardware_averaging`` tells who averages the frames.
     """
     params = comon_parameters + cam_params
 
     callback_signal = QtCore.Signal(Grab)
     live_mode_available = True
+    # The camera thread already averages Naverage frames (Grab.n_average): once the pymodaq releases that contain the fix
+    # of the live mode (PyMoDAQ #1421) are the minimum required, this should be True, otherwise the viewer averages
+    # the averaged frames a second time.
     hardware_averaging = False
 
     def ini_attributes(self):
