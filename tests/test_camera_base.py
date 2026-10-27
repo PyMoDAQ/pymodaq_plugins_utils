@@ -118,13 +118,22 @@ def calibrated_camera(qapp):
     plugin.close()
 
 
+def click_led(plugin, name: str, pressed: bool = True):
+    """What the user does: press (or release) the button of the parameter, which the DAQ_Viewer sends to the plugin"""
+    param = plugin.settings.child('roi', name)
+    param.opts['checked'] = pressed
+    param.activate()
+
+
 def select_roi(plugin, rows: slice, columns: slice):
     """What the user does: draw a ROI in the viewer, update it, then apply it"""
-    plugin.settings.child('roi', 'update_roi').setValue(True)
     plugin.roi_select(RoiInfo.from_slices([rows, columns]))
-    apply_roi = plugin.settings.child('roi', 'apply_roi')
-    apply_roi.setValue(True)
-    plugin.commit_settings(apply_roi)
+    click_led(plugin, 'update_roi')
+    click_led(plugin, 'apply_roi')
+
+
+def roi_leds(plugin):
+    return plugin.settings['roi', 'update_roi'], plugin.settings['roi', 'apply_roi']
 
 
 def set_binning(plugin, xbin: int, ybin: int):
@@ -184,6 +193,77 @@ class TestCameraBase:
         select_roi(camera, rows=slice(-5, 15), columns=slice(10, 100))
         assert camera.controller.get_roi() == (10, WIDTH, 0, 15, 1, 1)
 
+    def test_leds_are_grey_until_activated(self, camera):
+        assert roi_leds(camera) == ('off', 'off')
+
+    def test_leds_are_green_once_the_roi_is_updated_and_applied(self, camera):
+        select_roi(camera, rows=slice(5, 15), columns=slice(10, 30))
+        assert roi_leds(camera) == ('idle', 'idle')
+
+    def test_updating_takes_the_roi_now_in_the_viewer(self, camera):
+        camera.roi_select(RoiInfo.from_slices([slice(5, 15), slice(10, 30)]))  # drawn before the click
+        assert camera.roi_sensor_slices is None
+
+        click_led(camera, 'update_roi')
+
+        assert camera.roi_sensor_slices == (slice(5, 15), slice(10, 30))
+        assert roi_leds(camera) == ('idle', 'off')
+        assert camera.controller.get_roi() == (0, WIDTH, 0, HEIGHT, 1, 1)  # not applied yet
+
+    def test_updating_without_roi_in_the_viewer_is_an_error(self, camera):
+        click_led(camera, 'update_roi')
+        assert roi_leds(camera) == ('error', 'off')
+        assert not camera.settings.child('roi', 'update_roi').opts['checked']  # the button is released
+
+    def test_releasing_update_stops_following_the_viewer(self, camera):
+        select_roi(camera, rows=slice(5, 15), columns=slice(10, 30))
+        click_led(camera, 'update_roi', pressed=False)
+        assert roi_leds(camera) == ('off', 'idle')
+
+        camera.roi_select(RoiInfo.from_slices([slice(0, 10), slice(0, 10)]))
+        assert camera.controller.get_roi() == (10, 30, 5, 15, 1, 1)
+
+    def test_releasing_apply_goes_back_to_the_full_sensor(self, camera):
+        select_roi(camera, rows=slice(5, 15), columns=slice(10, 30))
+        click_led(camera, 'apply_roi', pressed=False)
+        assert roi_leds(camera) == ('idle', 'off')
+        assert camera.controller.get_roi() == (0, WIDTH, 0, HEIGHT, 1, 1)
+        assert camera.settings['hdet'] == WIDTH
+        assert camera.roi_sensor_slices == (slice(5, 15), slice(10, 30))  # applying again gives the same ROI
+
+        click_led(camera, 'apply_roi')
+        assert camera.controller.get_roi() == (10, 30, 5, 15, 1, 1)
+        assert roi_leds(camera) == ('idle', 'idle')
+
+    def test_applying_computes_the_image_size(self, camera):
+        select_roi(camera, rows=slice(5, 15), columns=slice(10, 30))
+        assert camera.settings['hdet'] == 20
+        assert camera.settings['vdet'] == 10
+
+    def test_applying_a_roi_outside_the_sensor_is_an_error(self, camera):
+        select_roi(camera, rows=slice(5, 15), columns=slice(WIDTH + 10, WIDTH + 30))
+        assert roi_leds(camera)[1] == 'error'
+        assert camera.controller.get_roi() == (0, WIDTH, 0, HEIGHT, 1, 1)
+
+    def test_applying_with_a_failing_camera_is_an_error(self, camera):
+        camera.controller.set_roi = lambda **kwargs: (_ for _ in ()).throw(RuntimeError('refused'))
+        camera.roi_select(RoiInfo.from_slices([slice(5, 15), slice(10, 30)]))
+        click_led(camera, 'apply_roi')
+        assert roi_leds(camera)[1] == 'error'
+
+    def test_applied_roi_follows_the_viewer_until_cleared(self, camera):
+        select_roi(camera, rows=slice(5, 15), columns=slice(10, 30))
+
+        camera.roi_select(RoiInfo.from_slices([slice(0, 10), slice(0, 10)]))
+        assert camera.controller.get_roi() == (0, 10, 0, 10, 1, 1)
+
+        clear = camera.settings.child('roi', 'clear_roi')
+        clear.setValue(True)
+        camera.commit_settings(clear)
+        assert roi_leds(camera) == ('off', 'off')
+        camera.roi_select(RoiInfo.from_slices([slice(0, 5), slice(0, 5)]))
+        assert camera.controller.get_roi() == (0, WIDTH, 0, HEIGHT, 1, 1)
+
     def test_changing_the_binning_keeps_the_roi(self, camera):
         select_roi(camera, rows=slice(5, 15), columns=slice(10, 30))
         set_binning(camera, 2, 5)
@@ -230,6 +310,11 @@ class TestPixelSize:
         assert calibrated_camera.x_axis.scaling == pytest.approx(5.0)
         assert calibrated_camera.y_axis.scaling == pytest.approx(10.0)
         assert dte[0].shape == (HEIGHT, WIDTH)
+
+    def test_roi_with_fractional_values_is_rounded_in_pixels_not_truncated_in_um(self, calibrated_camera):
+        # 5 um x 10 um pixels: 52.4 -> 10.48 and 157.6 -> 31.52 pixels (columns), 53 -> 5.3 and 147 -> 14.7 (rows)
+        select_roi(calibrated_camera, rows=slice(53.0, 147.0), columns=slice(52.4, 157.6))
+        assert calibrated_camera.controller.get_roi() == (10, 32, 5, 15, 1, 1)
 
     def test_roi_drawn_on_calibrated_axes_is_converted_to_pixels(self, calibrated_camera):
         select_roi(calibrated_camera, rows=slice(50, 150), columns=slice(50, 150))  # um: 5 to 15 rows, 10 to 30 cols

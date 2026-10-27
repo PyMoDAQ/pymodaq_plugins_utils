@@ -17,6 +17,7 @@ from pymodaq_data import DataToExport
 from pymodaq_utils.logger import set_logger, get_module_name
 from pymodaq_utils.utils import ThreadCommand
 from pymodaq_gui.parameter import Parameter
+from pymodaq_gui.utils.widgets import Status
 try:
     from pymodaq_gui.plotting.items.roi import RoiInfo  # pymodaq > 5.1.x
 except ImportError:
@@ -33,13 +34,19 @@ from time import perf_counter
 logger = set_logger(get_module_name(__file__))
 
 
+# States of the LEDs of the ROI buttons (Status workflow): grey when the button is released, blue while the change is
+# applied, green when it is, orange on error. They are set by the plugin, the user only presses or releases the button.
+ROI_LED_STATES = [Status.OFF, Status.RUNNING, Status.IDLE, Status.ERROR]
+
 cam_params = [
     {'title': 'Camera name:', 'name': 'camera_name', 'type': 'str', 'value': '', 'readonly': True},
-    {'title': 'Color Conversion:', 'name': 'color_conversion', 'type': 'list',
+    {'title': 'Color Conversion:', 'name': 'color_conversion', 'type': 'list', 'value': 'None',
      'limits': ['None', 'RGB2GRAY', 'BAYER_BG2RGB', 'BAYER_BG2GRAY'] if cv2 is not None else ['None']},
     {'title': 'ROI', 'name': 'roi', 'type': 'group', 'children': [
-        {'title': 'Update ROI from Viewer', 'name': 'update_roi', 'type': 'led_push', 'value': False},
-        {'title': 'Apply ROI', 'name': 'apply_roi', 'type': 'led_push', 'value': False},
+        {'title': 'Update ROI from Viewer', 'name': 'update_roi', 'type': 'action_led',
+         'value': Status.OFF.value, 'label': 'Update', 'limits': ROI_LED_STATES, 'checkable': True},
+        {'title': 'Apply ROI', 'name': 'apply_roi', 'type': 'action_led',
+         'value': Status.OFF.value, 'label': 'Apply', 'limits': ROI_LED_STATES, 'checkable': True},
         {'title': 'Clear ROI+Bin', 'name': 'clear_roi', 'type': 'bool_push', 'value': False},
         {'title': 'ROI:', 'name': 'roi_slices', 'type': 'str', 'value': '', 'readonly': True},
         {'title': 'X binning', 'name': 'x_binning', 'type': 'int', 'value': 1},
@@ -144,6 +151,15 @@ class CameraBase(DAQ_Viewer_base):
     # the averaged frames a second time.
     hardware_averaging = False
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # the activation of the buttons is sent by the DAQ_Viewer to the thread of the plugin (pymodaq >= 5.3.9)
+        for name, slot in (('update_roi', self._on_update_roi), ('apply_roi', self._on_apply_roi)):
+            try:
+                self.settings.child('roi', name).sigActivated.connect(slot)
+            except KeyError:  # a subclass without these parameters
+                pass
+
     def ini_attributes(self):
         self.controller = None
         self.callback_thread: QtCore.QThread = None
@@ -168,41 +184,111 @@ class CameraBase(DAQ_Viewer_base):
         get_pixel_size = getattr(self.controller, 'get_pixel_size', None)
         return get_pixel_size() if get_pixel_size is not None else None
 
+    def _set_roi_led(self, name: str, status: Status):
+        """Show the state of the 'update_roi' or 'apply_roi' LED"""
+        self.settings.child('roi', name).setValue(status)
+
+    def _roi_led_is(self, name: str, status: Status) -> bool:
+        return self.settings['roi', name] == status
+
+    def _fail_roi_button(self, name: str, message: str):
+        """The change asked by the button could not be done: orange LED, the button is released"""
+        self._set_roi_led(name, Status.ERROR)
+        self.settings.child('roi', name).setOpts(checked=False)
+        self.emit_status(ThreadCommand('Update_Status', [message, 'log']))
+
+    def _on_update_roi(self, param):
+        """The user pressed or released 'Update ROI from Viewer'
+
+        Pressed: take the ROI now in the viewer (blue LED while it is taken, green once it is, orange if there is
+        none to take) and follow the ROI of the viewer. Released: stop following it (grey LED).
+        """
+        if not param.opts.get('checked', False):
+            self._set_roi_led('update_roi', Status.OFF)
+            return
+        if self.roi_select_info is None:
+            self._fail_roi_button('update_roi', 'No ROI selected in the viewer')
+            return
+        self._set_roi_led('update_roi', Status.RUNNING)
+        self.update_roi_from_viewer()
+        self._set_roi_led('update_roi', Status.IDLE)
+        if self._roi_led_is('apply_roi', Status.IDLE):
+            self.apply_roi()
+
+    def _on_apply_roi(self, param):
+        """The user pressed or released 'Apply ROI'
+
+        Pressed: apply the ROI selected in the viewer (the one last taken, or the one now in the viewer if none was
+        taken), and apply it again when it changes. Released: the camera goes back to the full sensor (grey LED).
+        """
+        if not param.opts.get('checked', False):
+            self._set_roi_led('apply_roi', Status.RUNNING)
+            self.release_roi()
+            self._set_roi_led('apply_roi', Status.OFF)
+            return
+        if self.roi_sensor_slices is None and self.roi_select_info is not None:
+            self.update_roi_from_viewer()
+        self.apply_roi()
+
+    def release_roi(self):
+        """Full sensor, with the binning, the ROI selected in the viewer is kept"""
+        wdet, hdet = self.controller.get_detector_size()
+        self.update_rois((0, wdet, 0, hdet,
+                          self.settings['roi', 'x_binning'], self.settings['roi', 'y_binning']))
+
+    def update_roi_from_viewer(self):
+        """Compute the ROI of the sensor, in pixels, from the one last selected in the viewer"""
+        # the slices are in the values of the axes of the viewer (pixels of the sensor, or um if the pixel size is known).
+        # They are kept as floats: a truncation to integers would be wrong in um.
+        rows, columns = self.roi_select_info.to_slices(as_integer=False)
+        x_size, y_size = self.pixel_size if self.pixel_size is not None else (1, 1)
+        rows = slice(int(round(rows.start / y_size)), int(round(rows.stop / y_size)))
+        columns = slice(int(round(columns.start / x_size)), int(round(columns.stop / x_size)))
+        self.roi_sensor_slices = (rows, columns)
+        self.settings['roi', 'roi_slices'] = str(list(self.roi_sensor_slices))
+
     def roi_select(self, roi_info: RoiInfo, ind_viewer: int = 0):
         """ Automatically called when a user use the RoiSelect ROi from a 2D viewer"""
         self.roi_select_info = roi_info
         self.roi_select_viewer_index = ind_viewer
 
-        if self.settings['roi', 'update_roi']:
-            rows, columns = roi_info.to_slices()  # in the units of the viewer axes
-            pixel_size = self.pixel_size
-            if pixel_size is not None:  # axes in um, back to pixels of the sensor
-                rows = slice(int(round(rows.start / pixel_size[1])), int(round(rows.stop / pixel_size[1])))
-                columns = slice(int(round(columns.start / pixel_size[0])), int(round(columns.stop / pixel_size[0])))
-            self.roi_sensor_slices = (rows, columns)
-            self.settings['roi', 'roi_slices'] = str(list(self.roi_sensor_slices))
-            if self.settings['roi', 'apply_roi']:
+        if self._roi_led_is('update_roi', Status.IDLE):  # the ROI of the viewer is followed
+            self.update_roi_from_viewer()
+            if self._roi_led_is('apply_roi', Status.IDLE):
                 self.apply_roi()
 
     def apply_roi(self):
-        """Set the ROI of the camera from the one last selected in the viewer"""
+        """Set the ROI of the camera from the one last selected in the viewer
+
+        The 'apply_roi' LED is blue while the ROI is applied, then green, or orange if it cannot be applied.
+        """
         if self.roi_sensor_slices is None:
+            self._fail_roi_button('apply_roi', 'No ROI selected in the viewer')
             return
         width, height = self.controller.get_detector_size()
         rows, columns = self.roi_sensor_slices
         hstart, hend = max(columns.start, 0), min(columns.stop, width)
         vstart, vend = max(rows.start, 0), min(rows.stop, height)
         if hend <= hstart or vend <= vstart:
-            self.emit_status(ThreadCommand('Update_Status', ['The ROI is outside of the sensor', 'log']))
+            self._fail_roi_button('apply_roi', 'The ROI is outside of the sensor')
             return
-        self.update_rois((hstart, hend, vstart, vend,
-                          self.settings['roi', 'x_binning'], self.settings['roi', 'y_binning']))
+        self._set_roi_led('apply_roi', Status.RUNNING)
+        try:
+            self.update_rois((hstart, hend, vstart, vend,
+                              self.settings['roi', 'x_binning'], self.settings['roi', 'y_binning']))
+        except Exception as exc:
+            logger.exception(exc)
+            self._fail_roi_button('apply_roi', f'The ROI could not be applied: {exc}')
+            return
+        self._set_roi_led('apply_roi', Status.IDLE)
 
     def compute_axes(self):
         """Axes of the viewer from the current ROI and binning of the camera"""
         (hstart, hend, vstart, vend, hbin, vbin) = self.controller.get_roi()
         height, width = self.controller.get_data_dimensions()
         self.settings.child('roi', 'roi_slices').setValue(str([slice(vstart, vend, vbin), slice(hstart, hend, hbin)]))
+        self.settings.child('hdet').setValue(int(width))
+        self.settings.child('vdet').setValue(int(height))
 
         pixel_size = self.pixel_size
         x_size, y_size = pixel_size if pixel_size is not None else (1, 1)
@@ -219,6 +305,10 @@ class CameraBase(DAQ_Viewer_base):
         self.settings.child('roi', 'y_binning').setValue(1)
 
         self.update_rois((0, wdet, 0, hdet, 1, 1))
+        self.roi_sensor_slices = None
+        for name in ('update_roi', 'apply_roi'):
+            self._set_roi_led(name, Status.OFF)
+            self.settings.child('roi', name).setOpts(checked=False)
 
     def update_rois(self, new_roi: Tuple[int, int, int, int, int, int]):
         """Set the ROI and binning of the camera if they changed
@@ -255,12 +345,6 @@ class CameraBase(DAQ_Viewer_base):
 
         elif param.name() == "fps_on":
             self.settings.child('timing_opts', 'fps').setOpts(visible=param.value())
-
-        elif param.name() == "apply_roi":
-            if param.value():   # Switching on ROI
-                self.apply_roi()
-            else:
-                self.clear_roi()
 
         elif param.name() in ['x_binning', 'y_binning']:
             # We handle ROI and binning separately for clarity
@@ -434,7 +518,7 @@ class CameraBase(DAQ_Viewer_base):
             # Emit the frame.
             if frame is not None:
                 conversion_str = self.settings['color_conversion']
-                if conversion_str != "None" and cv2 is not None:
+                if conversion_str not in (None, "None") and cv2 is not None:
                     for ind_average in range(frame.shape[0]):
                         for ind_frame in range(frame.shape[1]):
                             if ind_frame == 0 and ind_average == 0:
