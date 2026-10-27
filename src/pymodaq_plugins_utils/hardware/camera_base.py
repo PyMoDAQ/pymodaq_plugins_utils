@@ -44,9 +44,9 @@ cam_params = [
      'limits': ['None', 'RGB2GRAY', 'BAYER_BG2RGB', 'BAYER_BG2GRAY'] if cv2 is not None else ['None']},
     {'title': 'ROI', 'name': 'roi', 'type': 'group', 'children': [
         {'title': 'Update ROI from Viewer', 'name': 'update_roi', 'type': 'action_led',
-         'value': Status.OFF.value, 'label': 'Update', 'states': ROI_LED_STATES, 'checkable': True},
+         'value': Status.OFF.value, 'label': 'Update', 'limits': ROI_LED_STATES, 'checkable': True},
         {'title': 'Apply ROI', 'name': 'apply_roi', 'type': 'action_led',
-         'value': Status.OFF.value, 'label': 'Apply', 'states': ROI_LED_STATES, 'checkable': True},
+         'value': Status.OFF.value, 'label': 'Apply', 'limits': ROI_LED_STATES, 'checkable': True},
         {'title': 'Clear ROI+Bin', 'name': 'clear_roi', 'type': 'bool_push', 'value': False},
         {'title': 'ROI:', 'name': 'roi_slices', 'type': 'str', 'value': '', 'readonly': True},
         {'title': 'X binning', 'name': 'x_binning', 'type': 'int', 'value': 1},
