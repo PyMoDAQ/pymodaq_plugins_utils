@@ -93,11 +93,24 @@ class FakeCameraWithPixelSize(FakeCamera):
         return 5.0, 10.0
 
 
+class FakeCameraSeveralFrames(FakeCamera):
+    """A camera that kept several frames since the last read (as when nobody reads while it acquires)"""
+    n_unread = 3
+
+    def read_multiple_images(self, rng=None, peek=False, missing_frame='skip', return_rng=False):
+        frames = np.repeat(self.read_newest_image()[None, ...], self.n_unread, axis=0)
+        return (frames, (0, self.n_unread)) if return_rng else frames
+
+
 class DAQ_2DViewer_Fake(CameraBase):
     driver_class = FakeCamera
 
     def ini_detector_custom(self, controller=None):
         self.controller = self.driver_class() if self.is_master else controller
+
+
+class DAQ_2DViewer_FakeSeveralFrames(DAQ_2DViewer_Fake):
+    driver_class = FakeCameraSeveralFrames
 
 
 class DAQ_2DViewer_FakeWithPixelSize(DAQ_2DViewer_Fake):
@@ -141,6 +154,17 @@ def set_binning(plugin, xbin: int, ybin: int):
         param = plugin.settings.child('roi', name)
         param.setValue(value)
         plugin.commit_settings(param)
+
+
+class TestSeveralUnreadFrames:
+    def test_a_snap_gives_one_image_when_the_camera_kept_several_frames(self, qapp):
+        plugin = make_detector(DAQ_2DViewer_FakeSeveralFrames)
+        try:
+            dte = grab_and_wait(plugin)
+            assert dte[0].dim.name == 'Data2D'
+            assert dte[0].shape == (HEIGHT, WIDTH)
+        finally:
+            plugin.close()
 
 
 class TestDriverContract:
