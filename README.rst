@@ -48,3 +48,6 @@ Utilities
   CameraDriverBase, whose methods are those of the pylablib cameras: write the driver of your camera against it,
   or use a pylablib one as it is.
 * CameraBasePyLabLib: CameraBase for the cameras of the pylablib package. Mostly for (S)CMOS camera
+* shaper: common interface of the plugins driving a shaper (SLM, DMD...): settings groups with the number of pixels,
+  their size and the properties of the modulator, filled by the plugin and read back by the applications (BeamShaping
+  extension) from the control module, see ``pymodaq_plugins_utils.hardware.shaper``
