@@ -66,16 +66,21 @@ def fill_shaper_settings(settings, name: str, width: int, height: int, pixel_siz
                          has_internal_calibration: bool = False) -> None:
     """Fill the groups of :func:`shaper_params` in the ``settings`` of a plugin (to be called in ``ini_stage``)
 
-    ``use_internal_calibration`` is set to ``has_internal_calibration``, the user can change it afterwards.
+    ``use_internal_calibration`` is the choice of the user: it is set to ``has_internal_calibration`` only the first
+    time (or if ``has_internal_calibration`` changed since the settings were saved, for instance with another
+    controller), otherwise the value restored from the preset is kept. It is never True without an internal calibration.
     """
     geometry = settings.child(GEOMETRY_NAME)
     for key, value in (('width', width), ('height', height), ('pixel_size_x', pixel_size_x),
                        ('pixel_size_y', pixel_size_x if pixel_size_y is None else pixel_size_y)):
         geometry.child(key).setValue(value)
     properties = settings.child(PROPERTIES_NAME)
+    keep_choice = bool(properties['has_internal_calibration']) == has_internal_calibration
+    use_internal_calibration = has_internal_calibration and (bool(properties['use_internal_calibration'])
+                                                             if keep_choice else True)
     for key, value in (('name', name), ('modulator_type', ModulatorType(modulator_type).value),
                        ('has_internal_calibration', has_internal_calibration),
-                       ('use_internal_calibration', has_internal_calibration)):
+                       ('use_internal_calibration', use_internal_calibration)):
         properties.child(key).setValue(value)
 
 

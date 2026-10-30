@@ -52,6 +52,26 @@ def test_use_internal_calibration_is_the_choice_of_the_user():
     assert shaper.has_internal_calibration and not shaper.use_internal_calibration
 
 
+def test_choice_of_the_user_survives_a_new_initialization():
+    module = FakeModule()
+    fill(module, has_internal_calibration=True)
+    assert Shaper.from_module(module).use_internal_calibration  # default: use it
+    module.plugin_settings.child('shaper_properties', 'use_internal_calibration').setValue(False)
+    fill(module, has_internal_calibration=True)  # ini_stage again, settings restored from the preset
+    assert not Shaper.from_module(module).use_internal_calibration
+
+
+def test_choice_reset_if_the_capability_changes():
+    module = FakeModule()
+    fill(module, has_internal_calibration=False)
+    assert not Shaper.from_module(module).use_internal_calibration
+    fill(module, has_internal_calibration=True)
+    assert Shaper.from_module(module).use_internal_calibration
+    module.plugin_settings.child('shaper_properties', 'use_internal_calibration').setValue(False)
+    fill(module, has_internal_calibration=False)
+    assert not Shaper.from_module(module).use_internal_calibration
+
+
 def test_plugin_without_the_groups():
     assert Shaper.from_module(FakeModule([])) is None
     assert Shaper.from_module(object()) is None
