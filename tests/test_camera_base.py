@@ -187,6 +187,12 @@ class TestDriverContract:
 
 
 class TestCameraBase:
+    def test_the_camera_averages_so_the_viewer_does_not(self):
+        """The frames are averaged by the camera thread (Grab.n_average): the viewer averaging them again would grab
+        Naverage x Naverage frames"""
+        assert CameraBase.hardware_averaging is True
+        assert CameraBase.live_mode_available is True
+
     def test_grab_a_full_frame(self, camera):
         dte = grab_and_wait(camera)
         assert dte[0].shape == (HEIGHT, WIDTH)

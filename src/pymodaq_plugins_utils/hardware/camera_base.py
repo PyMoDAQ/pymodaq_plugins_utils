@@ -146,10 +146,9 @@ class CameraBase(DAQ_Viewer_base):
 
     callback_signal = QtCore.Signal(Grab)
     live_mode_available = True
-    # The camera thread already averages Naverage frames (Grab.n_average): once the pymodaq releases that contain the fix
-    # of the live mode (PyMoDAQ #1421) are the minimum required, this should be True, otherwise the viewer averages
-    # the averaged frames a second time.
-    hardware_averaging = False
+    # The camera thread already averages Naverage frames (Grab.n_average), so the viewer must not average them again. It
+    # does not since pymodaq 5.3.9 (PyMoDAQ #1421, the live mode no longer depends on hardware_averaging).
+    hardware_averaging = True
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
