@@ -3,10 +3,10 @@
 A waveform output plugin is a DAQ_Move actuator whose position is a :class:`~pymodaq.utils.data.DataActuator` holding
 one array of samples (volts) per channel, all of the same length. It adds the settings groups returned by
 :func:`waveform_output_params` to its parameters and fills the capabilities once the instrument is initialized
-(:func:`fill_waveform_output_settings`). The applications (as the waveform extension) do not call the plugin, which
-lives in another thread: they read these groups from the settings of its control module
-(:meth:`WaveformOutput.from_module`), then check what they are going to send (:meth:`WaveformOutput.check`) and send
-the samples as the position of the actuator.
+(:func:`fill_waveform_output_settings`). The applications (for instance the extension of the package
+pymodaq_plugins_waveform) do not call the plugin, which lives in another thread: they read these groups from the
+settings of its control module (:meth:`WaveformOutput.from_module`), then check what they are going to send (:meth:`WaveformOutput.check`) and
+send the samples as the position of the actuator.
 
 Two groups: ``waveform_capabilities`` (read only, what the instrument can do) and ``waveform_output`` (what the user
 chooses: sample rate, mode, repetitions; the plugin applies them when it receives samples). The names of the groups and
