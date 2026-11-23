@@ -13,9 +13,8 @@ def create_waveform(name, **parameters):
 
 
 def test_registry_has_the_standard_forms():
-    assert WaveformFactory.names()[:8] == ['dc', 'sine', 'square', 'triangle', 'sawtooth', 'ramp', 'pulse',
-                                           'piecewise']
-    assert 'array' in WaveformFactory.names()
+    assert {'dc', 'sine', 'square', 'triangle', 'sawtooth', 'ramp', 'pulse', 'piecewise',
+            'array'} <= set(WaveformFactory.names())
     assert 'sine' in WaveformFactory().keys  # the usual interface of the PyMoDAQ factories
     assert WaveformFactory.get_class('sine') is wf.Sine and wf.Sine.name == 'sine'
     with pytest.raises(KeyError, match='Unknown waveform'):

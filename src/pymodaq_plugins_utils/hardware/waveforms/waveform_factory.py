@@ -22,11 +22,12 @@ frequency=1e3)``), and a plugin package can add its own::
 
 The contract with the applications and the plugins is :data:`WAVEFORM_VERSION`; evolution rule: only add forms and
 optional fields, never rename or remove one; a breaking change increments :data:`WAVEFORM_VERSION`.
+
+The forms live in the other modules of this package, which register themselves in the factory when imported (the
+``__init__`` imports them all).
 """
 import dataclasses
-import re
 from abc import ABC, abstractmethod
-from pathlib import Path
 from typing import Any, ClassVar, Optional, Type, Union
 
 import numpy as np
@@ -162,7 +163,7 @@ class WaveformFactory(ObjectFactory):
 
     @classmethod
     def names(cls) -> list[str]:
-        """Names of the registered waveforms, in the order of their registration"""
+        """Names of the registered waveforms, sorted as the form modules are imported"""
         return list(cls._builders.get(cls.__name__, {}))
 
     @classmethod
@@ -195,175 +196,3 @@ def _period(frequency: float, sample_rate: float) -> tuple[int, float]:
 def _phase(n: int, phase_deg: float) -> np.ndarray:
     """The position in the period (0 to 1, going around) of each of the n samples"""
     return (np.arange(n) / n + phase_deg / 360.) % 1.
-
-
-@WaveformFactory.register('dc')
-@dataclasses.dataclass
-class DC(Waveform):
-    title: ClassVar[str] = 'DC'
-    level: float = waveform_field(0., 'V', 'Level')
-    duration: float = waveform_field(1e-3, 's', 'Duration', min=0.)
-
-    def _realize(self, sample_rate):
-        return np.full(self.n_samples(sample_rate), self.level), None
-
-
-@WaveformFactory.register('sine')
-@dataclasses.dataclass
-class Sine(Waveform):
-    title: ClassVar[str] = 'Sine'
-    periodic: ClassVar[bool] = True
-    amplitude: float = waveform_field(1., 'V', 'Amplitude', tip='Peak value, half of the peak to peak')
-    frequency: float = waveform_field(1e3, 'Hz', 'Frequency', min=0.)
-    offset: float = waveform_field(0., 'V', 'Offset')
-    phase: float = waveform_field(0., 'deg', 'Phase')
-
-    def _realize(self, sample_rate):
-        n, frequency = _period(self.frequency, sample_rate)
-        return self.offset + self.amplitude * np.sin(2 * np.pi * _phase(n, self.phase)), frequency
-
-
-@WaveformFactory.register('square')
-@dataclasses.dataclass
-class Square(Waveform):
-    title: ClassVar[str] = 'Square'
-    periodic: ClassVar[bool] = True
-    amplitude: float = waveform_field(1., 'V', 'Amplitude', tip='Peak value, half of the peak to peak')
-    frequency: float = waveform_field(1e3, 'Hz', 'Frequency', min=0.)
-    offset: float = waveform_field(0., 'V', 'Offset')
-    phase: float = waveform_field(0., 'deg', 'Phase')
-    duty_cycle: float = waveform_field(0.5, 'dimensionless', 'Duty cycle', min=0., max=1.,
-                                       tip='Fraction of the period spent high')
-
-    def _realize(self, sample_rate):
-        n, frequency = _period(self.frequency, sample_rate)
-        high = _phase(n, self.phase) < self.duty_cycle
-        return self.offset + np.where(high, self.amplitude, -self.amplitude), frequency
-
-
-@WaveformFactory.register('triangle')
-@dataclasses.dataclass
-class Triangle(Waveform):
-    title: ClassVar[str] = 'Triangle'
-    periodic: ClassVar[bool] = True
-    amplitude: float = waveform_field(1., 'V', 'Amplitude', tip='Peak value, half of the peak to peak')
-    frequency: float = waveform_field(1e3, 'Hz', 'Frequency', min=0.)
-    offset: float = waveform_field(0., 'V', 'Offset')
-    phase: float = waveform_field(0., 'deg', 'Phase')
-    symmetry: float = waveform_field(0.5, 'dimensionless', 'Symmetry', min=0.01, max=0.99,
-                                     tip='Fraction of the period spent rising')
-
-    def _realize(self, sample_rate):
-        n, frequency = _period(self.frequency, sample_rate)
-        s = self.symmetry
-        x = (_phase(n, self.phase) + s / 2) % 1.  # a symmetric triangle crosses zero rising at phase 0
-        y = np.where(x < s, -1 + 2 * x / s, 1 - 2 * (x - s) / (1 - s))
-        return self.offset + self.amplitude * y, frequency
-
-
-@WaveformFactory.register('sawtooth')
-@dataclasses.dataclass
-class Sawtooth(Waveform):
-    title: ClassVar[str] = 'Sawtooth'
-    periodic: ClassVar[bool] = True
-    amplitude: float = waveform_field(1., 'V', 'Amplitude', tip='Peak value, half of the peak to peak')
-    frequency: float = waveform_field(1e3, 'Hz', 'Frequency', min=0.)
-    offset: float = waveform_field(0., 'V', 'Offset')
-    phase: float = waveform_field(0., 'deg', 'Phase')
-
-    def _realize(self, sample_rate):
-        n, frequency = _period(self.frequency, sample_rate)
-        return self.offset + self.amplitude * (2 * ((_phase(n, self.phase) + 0.5) % 1.) - 1), frequency
-
-
-@WaveformFactory.register('ramp')
-@dataclasses.dataclass
-class Ramp(Waveform):
-    title: ClassVar[str] = 'Ramp'
-    start: float = waveform_field(0., 'V', 'Start')
-    stop: float = waveform_field(1., 'V', 'Stop')
-    duration: float = waveform_field(1e-3, 's', 'Duration', min=0.)
-
-    def _realize(self, sample_rate):
-        return np.linspace(self.start, self.stop, self.n_samples(sample_rate)), None
-
-
-@WaveformFactory.register('pulse')
-@dataclasses.dataclass
-class Pulse(Waveform):
-    title: ClassVar[str] = 'Pulse'
-    baseline: float = waveform_field(0., 'V', 'Baseline')
-    amplitude: float = waveform_field(1., 'V', 'Amplitude', tip='Height of the pulse above the baseline')
-    delay: float = waveform_field(1e-4, 's', 'Delay', min=0., tip='From the start to the rising edge')
-    width: float = waveform_field(1e-4, 's', 'Width', min=0.)
-    duration: float = waveform_field(1e-3, 's', 'Duration', min=0., tip='Total, the signal returns to the baseline')
-
-    def _realize(self, sample_rate):
-        t = np.arange(self.n_samples(sample_rate)) / sample_rate
-        high = (t >= self.delay) & (t < self.delay + self.width)
-        return self.baseline + self.amplitude * high, None
-
-
-_NUMBER = r'[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?'
-
-
-def parse_breakpoints(text: str) -> tuple[np.ndarray, np.ndarray]:
-    """Times (s) and values (V) of ``'0:0, 1e-3:5, 3e-3:5, 4e-3:0'``, entries separated by a comma or a new line
-
-    Raises ValueError if an entry is not ``time:value`` or the times do not increase.
-    """
-    entries = [entry for entry in re.split(r'[,\n;]+', text) if entry.strip()]
-    times, values = [], []
-    for entry in entries:
-        match = re.fullmatch(rf'\s*({_NUMBER})\s*:\s*({_NUMBER})\s*', entry)
-        if match is None:
-            raise ValueError(f'"{entry.strip()}" is not a time:value pair')
-        times.append(float(match.group(1)))
-        values.append(float(match.group(2)))
-    if len(times) < 2:
-        raise ValueError('At least two time:value pairs are needed')
-    if np.any(np.diff(times) <= 0):
-        raise ValueError('The times should increase')
-    return np.array(times), np.array(values)
-
-
-@WaveformFactory.register('piecewise')
-@dataclasses.dataclass
-class Piecewise(Waveform):
-    """Straight segments between points given as ``time:value`` pairs (seconds and volts)"""
-    title: ClassVar[str] = 'Piecewise linear'
-    points: str = waveform_field('0:0, 1e-3:1, 2e-3:0', None, 'Points',
-                                 tip='time:value pairs in s and V, separated by commas or new lines. The signal '
-                                     'goes in a straight line from one point to the next, from the first to the '
-                                     'last time')
-
-    def __post_init__(self):
-        super().__post_init__()
-        parse_breakpoints(self.points)  # fail at creation
-
-    def _realize(self, sample_rate):
-        times, values = parse_breakpoints(self.points)
-        t = np.arange(int(round((times[-1] - times[0]) * sample_rate)) + 1) / sample_rate + times[0]
-        return np.interp(t, times, values), None
-
-
-@WaveformFactory.register('array')
-@dataclasses.dataclass
-class Array(Waveform):
-    """Samples taken as they are, from a file (``.npy`` or text) or given as ``values``; they are played at the sample
-    rate of the output"""
-    title: ClassVar[str] = 'Array'
-    path: str = waveform_field('', None, 'File', tip='.npy file or text file (csv) with one column of samples in V')
-    values: Optional[np.ndarray] = None  # not a parameter: the samples when no file is given
-
-    def _realize(self, sample_rate):
-        values = self.values
-        if values is None:
-            if not self.path:
-                raise ValueError('No file and no values for the array waveform')
-            path = Path(self.path)
-            values = np.load(path) if path.suffix == '.npy' else np.loadtxt(path, delimiter=',')
-        values = np.asarray(values, dtype=float)
-        if values.ndim != 1 or len(values) < 2:
-            raise ValueError('The samples should be a 1D array of at least two values')
-        return values, None
