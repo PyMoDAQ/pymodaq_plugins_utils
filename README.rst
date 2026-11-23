@@ -51,3 +51,11 @@ Utilities
 * shaper: common interface of the plugins driving a shaper (SLM, DMD...): settings groups with the number of pixels,
   their size and the properties of the modulator, filled by the plugin and read back by the applications (BeamShaping
   extension) from the control module, see ``pymodaq_plugins_utils.hardware.shaper``
+* waveforms: waveform factory. A waveform (dc, sine, square, triangle, sawtooth, ramp, pulse, piecewise linear points,
+  array from a file) is a dataclass of its parameters, given by name from a registry that plugin packages can extend.
+  ``realize(sample_rate)`` gives the samples, one period with a whole number of samples for a periodic waveform (the
+  frequency really generated is returned), and ``params()`` the settings, see ``pymodaq_plugins_utils.hardware.waveforms``
+* waveform_output: common interface of the plugins generating waveforms (analog outputs, arbitrary generators): the
+  capabilities of the instrument and the choices of the user (sample rate, mode, repetitions) as settings groups,
+  read back by the applications from the control module, which check what they send, see
+  ``pymodaq_plugins_utils.hardware.waveform_output``
