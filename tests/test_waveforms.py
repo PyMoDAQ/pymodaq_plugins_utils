@@ -37,7 +37,7 @@ def test_a_plugin_can_register_its_own_waveform():
         assert 'test_constant2' in WaveformFactory.names()
         assert create_waveform('test_constant2', value=Q_(3000, 'mV')).realize(1e3).samples.tolist() == [3.] * 4
     finally:
-        wf.WaveformFactory._builders['WaveformFactory'].pop('test_constant2')
+        wf.WaveformFactory.unregister('test_constant2')
 
 
 def test_dc():

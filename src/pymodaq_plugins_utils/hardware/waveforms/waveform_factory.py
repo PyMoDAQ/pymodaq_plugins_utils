@@ -5,8 +5,8 @@ signal itself from parameters and one that needs the samples (:meth:`Waveform.re
 numbers expressed in that unit (SI: V, s, Hz, degrees for a phase); a pint quantity is accepted when creating the
 waveform and converted.
 
-:class:`WaveformFactory` is a PyMoDAQ :class:`~pymodaq_utils.factory.ObjectFactory`: it gives the forms by name, so an
-application can offer them in a list (``WaveformFactory.names()``) and create one (``WaveformFactory().get('sine',
+:class:`WaveformFactory` gives the forms by name (a registry in the spirit of the PyMoDAQ factories, but self contained),
+so an application can offer them in a list (``WaveformFactory.names()``) and create one (``WaveformFactory().get('sine',
 frequency=1e3)``), and a plugin package can add its own::
 
     @WaveformFactory.register('gaussian')
@@ -33,7 +33,6 @@ from typing import Any, ClassVar, Optional, Type, Union
 import numpy as np
 
 from pymodaq_data import Q_
-from pymodaq_utils.factory import ObjectFactory
 
 WAVEFORM_VERSION = 1
 
@@ -148,34 +147,47 @@ class Waveform(ABC):
                                 0. if frequency is None else frequency - requested)
 
 
-class WaveformFactory(ObjectFactory):
-    """Factory class registering and creating the waveforms by name
+class WaveformFactory:
+    """Registry of the waveforms by name, and their creation
 
-    ``@WaveformFactory.register('sine')`` on a :class:`Waveform` dataclass registers it and gives it its ``name``.
+    ``@WaveformFactory.register('sine')`` on a :class:`Waveform` dataclass registers it and gives it its ``name``. The
+    registry belongs to the class, so there is a single one whatever the number of instances.
     """
+    _waveforms: dict[str, Type[Waveform]] = {}
 
     @classmethod
     def register(cls, key: str):
+        """Class decorator registering a waveform as ``key``"""
         def inner_wrapper(wrapped_class: Type[Waveform]) -> Type[Waveform]:
             wrapped_class.name = key
-            return super(WaveformFactory, cls).register(key)(wrapped_class)
+            cls._waveforms[key] = wrapped_class
+            return wrapped_class
         return inner_wrapper
+
+    @classmethod
+    def unregister(cls, key: str) -> None:
+        cls._waveforms.pop(key, None)
 
     @classmethod
     def names(cls) -> list[str]:
         """Names of the registered waveforms, sorted as the form modules are imported"""
-        return list(cls._builders.get(cls.__name__, {}))
+        return list(cls._waveforms)
 
     @classmethod
     def get_class(cls, key: str) -> Type[Waveform]:
-        waveform_class = super().get_class(key)
-        if waveform_class is None:
-            raise KeyError(f'Unknown waveform {key}, available: {cls.names()}')
-        return waveform_class
+        try:
+            return cls._waveforms[key]
+        except KeyError:
+            raise KeyError(f'Unknown waveform {key}, available: {cls.names()}') from None
+
+    @classmethod
+    def create(cls, name: str, **parameters) -> Waveform:
+        """Create the waveform registered as ``name`` from its parameters (numbers or pint quantities)"""
+        return cls.get_class(name)(**parameters)
 
     def get(self, name: str, **parameters) -> Waveform:
-        """Create the waveform registered as ``name`` from its parameters (numbers or pint quantities)"""
-        return self.get_class(name)(**parameters)
+        """Same as :meth:`create`"""
+        return self.create(name, **parameters)
 
 
 # ---- helpers of the periodic waveforms
