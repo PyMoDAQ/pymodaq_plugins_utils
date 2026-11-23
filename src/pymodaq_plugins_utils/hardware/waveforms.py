@@ -5,13 +5,13 @@ signal itself from parameters and one that needs the samples (:meth:`Waveform.re
 numbers expressed in that unit (SI: V, s, Hz, degrees for a phase); a pint quantity is accepted when creating the
 waveform and converted.
 
-The registry (:func:`register_waveform`, :func:`create_waveform`, :func:`waveform_names`) gives the forms by name, so an
-application can offer them in a list and a plugin package can add its own::
+:class:`WaveformFactory` is a PyMoDAQ :class:`~pymodaq_utils.factory.ObjectFactory`: it gives the forms by name, so an
+application can offer them in a list (``WaveformFactory.names()``) and create one (``WaveformFactory().get('sine',
+frequency=1e3)``), and a plugin package can add its own::
 
-    @register_waveform
+    @WaveformFactory.register('gaussian')
     @dataclasses.dataclass
     class Gaussian(Waveform):
-        name: ClassVar[str] = 'gaussian'
         center: float = waveform_field(1e-3, 's', 'Center')
         width: float = waveform_field(1e-4, 's', 'Width')
         duration: float = waveform_field(2e-3, 's', 'Duration')
@@ -32,6 +32,7 @@ from typing import Any, ClassVar, Optional, Type, Union
 import numpy as np
 
 from pymodaq_data import Q_
+from pymodaq_utils.factory import ObjectFactory
 
 WAVEFORM_VERSION = 1
 
@@ -146,34 +147,34 @@ class Waveform(ABC):
                                 0. if frequency is None else frequency - requested)
 
 
-_REGISTRY: dict[str, Type[Waveform]] = {}
+class WaveformFactory(ObjectFactory):
+    """Factory class registering and creating the waveforms by name
 
+    ``@WaveformFactory.register('sine')`` on a :class:`Waveform` dataclass registers it and gives it its ``name``.
+    """
 
-def register_waveform(cls: Type[Waveform]) -> Type[Waveform]:
-    """Class decorator adding a waveform to the registry under its ``name``"""
-    if not cls.name:
-        raise ValueError(f'{cls.__name__} has no name')
-    if cls.name in _REGISTRY and _REGISTRY[cls.name] is not cls:
-        raise ValueError(f'A waveform called {cls.name} is already registered')
-    _REGISTRY[cls.name] = cls
-    return cls
+    @classmethod
+    def register(cls, key: str):
+        def inner_wrapper(wrapped_class: Type[Waveform]) -> Type[Waveform]:
+            wrapped_class.name = key
+            return super(WaveformFactory, cls).register(key)(wrapped_class)
+        return inner_wrapper
 
+    @classmethod
+    def names(cls) -> list[str]:
+        """Names of the registered waveforms, in the order of their registration"""
+        return list(cls._builders.get(cls.__name__, {}))
 
-def waveform_names() -> list[str]:
-    """Names of the registered waveforms, in the order of their registration"""
-    return list(_REGISTRY)
+    @classmethod
+    def get_class(cls, key: str) -> Type[Waveform]:
+        waveform_class = super().get_class(key)
+        if waveform_class is None:
+            raise KeyError(f'Unknown waveform {key}, available: {cls.names()}')
+        return waveform_class
 
-
-def get_waveform_class(name: str) -> Type[Waveform]:
-    try:
-        return _REGISTRY[name]
-    except KeyError:
-        raise KeyError(f'Unknown waveform {name}, available: {waveform_names()}') from None
-
-
-def create_waveform(name: str, **parameters) -> Waveform:
-    """Create the waveform registered as ``name`` from its parameters (numbers or pint quantities)"""
-    return get_waveform_class(name)(**parameters)
+    def get(self, name: str, **parameters) -> Waveform:
+        """Create the waveform registered as ``name`` from its parameters (numbers or pint quantities)"""
+        return self.get_class(name)(**parameters)
 
 
 # ---- helpers of the periodic waveforms
@@ -196,10 +197,9 @@ def _phase(n: int, phase_deg: float) -> np.ndarray:
     return (np.arange(n) / n + phase_deg / 360.) % 1.
 
 
-@register_waveform
+@WaveformFactory.register('dc')
 @dataclasses.dataclass
 class DC(Waveform):
-    name: ClassVar[str] = 'dc'
     title: ClassVar[str] = 'DC'
     level: float = waveform_field(0., 'V', 'Level')
     duration: float = waveform_field(1e-3, 's', 'Duration', min=0.)
@@ -208,10 +208,9 @@ class DC(Waveform):
         return np.full(self.n_samples(sample_rate), self.level), None
 
 
-@register_waveform
+@WaveformFactory.register('sine')
 @dataclasses.dataclass
 class Sine(Waveform):
-    name: ClassVar[str] = 'sine'
     title: ClassVar[str] = 'Sine'
     periodic: ClassVar[bool] = True
     amplitude: float = waveform_field(1., 'V', 'Amplitude', tip='Peak value, half of the peak to peak')
@@ -224,10 +223,9 @@ class Sine(Waveform):
         return self.offset + self.amplitude * np.sin(2 * np.pi * _phase(n, self.phase)), frequency
 
 
-@register_waveform
+@WaveformFactory.register('square')
 @dataclasses.dataclass
 class Square(Waveform):
-    name: ClassVar[str] = 'square'
     title: ClassVar[str] = 'Square'
     periodic: ClassVar[bool] = True
     amplitude: float = waveform_field(1., 'V', 'Amplitude', tip='Peak value, half of the peak to peak')
@@ -243,10 +241,9 @@ class Square(Waveform):
         return self.offset + np.where(high, self.amplitude, -self.amplitude), frequency
 
 
-@register_waveform
+@WaveformFactory.register('triangle')
 @dataclasses.dataclass
 class Triangle(Waveform):
-    name: ClassVar[str] = 'triangle'
     title: ClassVar[str] = 'Triangle'
     periodic: ClassVar[bool] = True
     amplitude: float = waveform_field(1., 'V', 'Amplitude', tip='Peak value, half of the peak to peak')
@@ -264,10 +261,9 @@ class Triangle(Waveform):
         return self.offset + self.amplitude * y, frequency
 
 
-@register_waveform
+@WaveformFactory.register('sawtooth')
 @dataclasses.dataclass
 class Sawtooth(Waveform):
-    name: ClassVar[str] = 'sawtooth'
     title: ClassVar[str] = 'Sawtooth'
     periodic: ClassVar[bool] = True
     amplitude: float = waveform_field(1., 'V', 'Amplitude', tip='Peak value, half of the peak to peak')
@@ -280,10 +276,9 @@ class Sawtooth(Waveform):
         return self.offset + self.amplitude * (2 * ((_phase(n, self.phase) + 0.5) % 1.) - 1), frequency
 
 
-@register_waveform
+@WaveformFactory.register('ramp')
 @dataclasses.dataclass
 class Ramp(Waveform):
-    name: ClassVar[str] = 'ramp'
     title: ClassVar[str] = 'Ramp'
     start: float = waveform_field(0., 'V', 'Start')
     stop: float = waveform_field(1., 'V', 'Stop')
@@ -293,10 +288,9 @@ class Ramp(Waveform):
         return np.linspace(self.start, self.stop, self.n_samples(sample_rate)), None
 
 
-@register_waveform
+@WaveformFactory.register('pulse')
 @dataclasses.dataclass
 class Pulse(Waveform):
-    name: ClassVar[str] = 'pulse'
     title: ClassVar[str] = 'Pulse'
     baseline: float = waveform_field(0., 'V', 'Baseline')
     amplitude: float = waveform_field(1., 'V', 'Amplitude', tip='Height of the pulse above the baseline')
@@ -333,11 +327,10 @@ def parse_breakpoints(text: str) -> tuple[np.ndarray, np.ndarray]:
     return np.array(times), np.array(values)
 
 
-@register_waveform
+@WaveformFactory.register('piecewise')
 @dataclasses.dataclass
 class Piecewise(Waveform):
     """Straight segments between points given as ``time:value`` pairs (seconds and volts)"""
-    name: ClassVar[str] = 'piecewise'
     title: ClassVar[str] = 'Piecewise linear'
     points: str = waveform_field('0:0, 1e-3:1, 2e-3:0', None, 'Points',
                                  tip='time:value pairs in s and V, separated by commas or new lines. The signal '
@@ -354,12 +347,11 @@ class Piecewise(Waveform):
         return np.interp(t, times, values), None
 
 
-@register_waveform
+@WaveformFactory.register('array')
 @dataclasses.dataclass
 class Array(Waveform):
     """Samples taken as they are, from a file (``.npy`` or text) or given as ``values``; they are played at the sample
     rate of the output"""
-    name: ClassVar[str] = 'array'
     title: ClassVar[str] = 'Array'
     path: str = waveform_field('', None, 'File', tip='.npy file or text file (csv) with one column of samples in V')
     values: Optional[np.ndarray] = None  # not a parameter: the samples when no file is given

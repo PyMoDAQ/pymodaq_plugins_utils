@@ -5,36 +5,40 @@ from pymodaq_gui.parameter import Parameter
 
 from pymodaq_data import Q_
 from pymodaq_plugins_utils.hardware import waveforms as wf
-from pymodaq_plugins_utils.hardware.waveforms import (create_waveform, waveform_names, register_waveform, Waveform,
-                                                      waveform_field, parse_breakpoints)
+from pymodaq_plugins_utils.hardware.waveforms import WaveformFactory, Waveform, waveform_field, parse_breakpoints
+
+
+def create_waveform(name, **parameters):
+    return WaveformFactory().get(name, **parameters)
 
 
 def test_registry_has_the_standard_forms():
-    assert waveform_names()[:8] == ['dc', 'sine', 'square', 'triangle', 'sawtooth', 'ramp', 'pulse', 'piecewise']
-    assert 'array' in waveform_names()
+    assert WaveformFactory.names()[:8] == ['dc', 'sine', 'square', 'triangle', 'sawtooth', 'ramp', 'pulse',
+                                           'piecewise']
+    assert 'array' in WaveformFactory.names()
+    assert 'sine' in WaveformFactory().keys  # the usual interface of the PyMoDAQ factories
+    assert WaveformFactory.get_class('sine') is wf.Sine and wf.Sine.name == 'sine'
     with pytest.raises(KeyError, match='Unknown waveform'):
         create_waveform('nope')
 
 
 def test_a_plugin_can_register_its_own_waveform():
     import dataclasses
-    from typing import ClassVar
 
-    @register_waveform
+    @WaveformFactory.register('test_constant2')
     @dataclasses.dataclass
     class Constant2(Waveform):
-        name: ClassVar[str] = 'test_constant2'
         value: float = waveform_field(2., 'V', 'Value')
 
         def _realize(self, sample_rate):
             return np.full(4, self.value), None
 
     try:
+        assert Constant2.name == 'test_constant2'
+        assert 'test_constant2' in WaveformFactory.names()
         assert create_waveform('test_constant2', value=Q_(3000, 'mV')).realize(1e3).samples.tolist() == [3.] * 4
-        with pytest.raises(ValueError, match='already registered'):
-            register_waveform(type('Other', (Constant2,), {'name': 'test_constant2'}))
     finally:
-        wf._REGISTRY.pop('test_constant2')
+        wf.WaveformFactory._builders['WaveformFactory'].pop('test_constant2')
 
 
 def test_dc():
@@ -144,7 +148,7 @@ def test_limits():
                                   'array'])
 def test_settings_roundtrip(name):
     """The params make a settings group and the waveform is read back from it"""
-    cls = wf.get_waveform_class(name)
+    cls = wf.WaveformFactory.get_class(name)
     group = Parameter.create(name='waveform', type='group', children=cls.params())
     wave = cls.from_settings(group)
     defaults = {f.name: f.default for f in cls._parameters()}
